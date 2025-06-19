@@ -36,22 +36,20 @@ async def on_message(message):
         return
 
     content = message.content.strip()
-    author = message.author.display_name
-    full_text = f"{author} : {content}" if content else ""
-    telegram_text = discord_to_telegram_html(full_text)
+    telegram_text = discord_to_telegram_html(content) if content else ""
 
-    # Republie le texte sur Discord
+    # Envoi sur Discord (texte seul)
     if content:
-        await message.channel.send(full_text)
+        await message.channel.send(content)
 
-    # Fichiers attachés
+    # Pièces jointes
     for attachment in message.attachments:
         if attachment.size > TELEGRAM_MAX_SIZE_MB * 1024 * 1024:
-            await message.channel.send(f"{full_text}\n⚠️ Fichier trop lourd : {attachment.filename}")
+            await message.channel.send(f"{content}\n⚠️ Fichier trop lourd : {attachment.filename}")
             continue
 
-        await message.channel.send(file=await attachment.to_file())
         file_bytes = requests.get(attachment.url).content
+        await message.channel.send(file=await attachment.to_file())
 
         if attachment.content_type and attachment.content_type.startswith('image'):
             method = 'sendPhoto'
@@ -67,7 +65,7 @@ async def on_message(message):
         if telegram_text:
             data["caption"] = telegram_text
             data["parse_mode"] = "HTML"
-            telegram_text = ""  # éviter répétition sur plusieurs fichiers
+            telegram_text = ""  # éviter répétition
 
         r = requests.post(
             f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/{method}",
@@ -90,7 +88,7 @@ async def on_message(message):
         if not r.ok:
             print(f"❌ Erreur Telegram (texte): {r.status_code} {r.text}")
 
-    # Supprimer message d'origine
+    # Supprime le message original
     await message.delete()
 
 client.run(DISCORD_TOKEN)
