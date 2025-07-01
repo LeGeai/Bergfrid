@@ -51,9 +51,23 @@ async def youtube_watcher():
             if latest_id != last_video_id:
                 youtube_url = latest_entry['link']
                 title = latest_entry['title']
+                message_discord = f"Nouvelle vidéo sur la chaîne : **{title}**\n{youtube_url}"
+                message_telegram = f"Nouvelle vidéo sur la chaîne : <b>{title}</b>\n{youtube_url}"
+                # Publication Discord
                 channel = client.get_channel(DISCORD_YOUTUBE_CHANNEL_ID)
                 if channel:
-                    await channel.send(f"Nouvelle vidéo sur la chaîne : **{title}**\n{youtube_url}")
+                    await channel.send(message_discord)
+                # Publication Telegram
+                r = requests.post(
+                    f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+                    data={
+                        "chat_id": TELEGRAM_CHAT_ID,
+                        "text": message_telegram,
+                        "parse_mode": "HTML"
+                    }
+                )
+                if not r.ok:
+                    print(f"❌ Erreur Telegram (youtube): {r.status_code} {r.text}")
                 set_last_youtube_video_id(latest_id)
                 last_video_id = latest_id
         await asyncio.sleep(300)  # Vérifie toutes les 5 minutes
@@ -61,7 +75,6 @@ async def youtube_watcher():
 @client.event
 async def on_ready():
     print(f'✅ Connecté comme {client.user}')
-    # Lance la surveillance YouTube
     client.loop.create_task(youtube_watcher())
 
 @client.event
