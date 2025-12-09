@@ -14,9 +14,9 @@ TELEGRAM_CHAT_ID = os.environ['TELEGRAM_CHAT_ID']
 # Tu peux aussi le mettre en variable d'env : int(os.environ['DISCORD_NEWS_CHANNEL_ID'])
 DISCORD_NEWS_CHANNEL_ID = 1330916602425770088
 
-# Config API Site
+# RSS du Site
 BERGFRID_RSS_URL = "https://bergfrid.com/rss.xml"
-BERGFRID_MEMORY_FILE = "last_article_id.txt"
+BERGFRID_MEMORY_FILE = "last_article_link.txt"
 
 # Discord Setup
 intents = discord.Intents.default()
@@ -50,9 +50,9 @@ async def bergfrid_watcher():
         except Exception as e:
             print(f"❌ Erreur init RSS : {e}")
 
-    print("🚀 Bot opérationnel (Mode RSS)")
+    print("🚀 Bot opérationnel (Mode Simplifié)")
 
-    # 2. Boucle
+    # 2. Boucle de surveillance
     while not client.is_closed():
         try:
             feed = feedparser.parse(BERGFRID_RSS_URL)
@@ -61,24 +61,18 @@ async def bergfrid_watcher():
                 latest_entry = feed.entries[0]
                 current_link = latest_entry.link
                 
-                # SI NOUVEAU LIEN
+                # SI NOUVEAU LIEN DÉTECTÉ
                 if current_link != last_link and last_link is not None:
                     
-                    # Extraction des données RSS
+                    # Extraction des données
                     title = latest_entry.title
                     summary = latest_entry.description
-                    # Nettoyage sommaire du résumé (enlève les balises HTML si besoin)
-                    summary = summary.replace("<p>", "").replace("</p>", "")
+                    # Nettoyage sommaire du HTML dans le résumé
+                    summary = summary.replace("<p>", "").replace("</p>", "").replace("<br>", "\n")
                     
                     url = current_link
-                    date_str = latest_entry.published
                     
-                    # Gestion de l'image (Media RSS)
-                    image = None
-                    if 'media_content' in latest_entry:
-                        image = latest_entry.media_content[0]['url']
-                    
-                    # Gestion des tags (Category)
+                    # Gestion des tags pour l'affichage
                     tags = []
                     if 'tags' in latest_entry:
                         tags = [f"#{t.term}" for t in latest_entry.tags]
@@ -86,36 +80,37 @@ async def bergfrid_watcher():
 
                     print(f"📣 Nouvelle publication : {title}")
 
-                    # --- DISCORD ---
+                    # --- A. DISCORD (SIMPLE) ---
                     channel = client.get_channel(DISCORD_NEWS_CHANNEL_ID)
                     if channel:
-                        embed = discord.Embed(title=title, description=summary, url=url, color=0x000000)
-                        embed.set_author(name="Bergfrid | Dépêche", icon_url="https://bergfrid.com/favicon.svg")
-                        if image: embed.set_image(url=image)
-                        embed.set_footer(text=f"Publié le {date_str}")
+                        # On crée un encadré noir simple : Titre + Lien + Résumé
+                        embed = discord.Embed(
+                            title=title, 
+                            url=url, 
+                            description=summary, 
+                            color=0x000000 # Noir
+                        )
+                        # Pas d'image, pas d'auteur, juste l'info.
                         
                         try:
-                            await channel.send(content=f"🚨 **NOUVELLE DÉPÊCHE** {tags_str}", embed=embed)
+                            await channel.send(content=f"🚨 **DÉPÊCHE** {tags_str}", embed=embed)
                         except Exception as e:
                             print(f"Erreur Discord: {e}")
 
-                    # --- TELEGRAM ---
+                    # --- B. TELEGRAM (TEXTE PUR) ---
+                    # Format : Titre (Gras) / Résumé / Lien
                     telegram_text = f"🚨 <b>{title}</b>\n\n{summary}\n\n👉 <a href='{url}'>Lire l'article</a>\n\n<i>{tags_str}</i>"
-                    telegram_data = {"chat_id": TELEGRAM_CHAT_ID, "parse_mode": "HTML"}
+                    
+                    telegram_data = {
+                        "chat_id": TELEGRAM_CHAT_ID,
+                        "text": telegram_text,
+                        "parse_mode": "HTML",
+                        "disable_web_page_preview": False # On laisse l'aperçu du lien généré par Telegram
+                    }
 
                     try:
-                        if image:
-                            telegram_data["caption"] = telegram_text
-                            # On télécharge l'image
-                            img_r = requests.get(image)
-                            if img_r.ok:
-                                requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendPhoto", data=telegram_data, files={"photo": img_r.content})
-                            else:
-                                telegram_data["text"] = telegram_text
-                                requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage", data=telegram_data)
-                        else:
-                            telegram_data["text"] = telegram_text
-                            requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage", data=telegram_data)
+                        # On utilise sendMessage uniquement (plus léger que sendPhoto)
+                        requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage", data=telegram_data)
                     except Exception as e:
                         print(f"Erreur Telegram: {e}")
 
@@ -126,7 +121,7 @@ async def bergfrid_watcher():
         except Exception as e:
             print(f"⚠️ Erreur boucle RSS : {e}")
         
-        await asyncio.sleep(120)
+        await asyncio.sleep(120) # Pause de 2 minutes
 
 @client.event
 async def on_ready():
