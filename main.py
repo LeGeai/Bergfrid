@@ -188,38 +188,36 @@ async def bergfrid_watcher():
             latest_entry = feed.entries[0]
             current_link = latest_entry.link
             
+            # --- NOUVEAU : CORRECTION DU LIEN ---
+            # Si le lien commence par 'http://localhost' ou est relatif,
+            # nous le préfixons avec l'URL de base du site (déduite du flux RSS).
+            
+            # On extrait le domaine de BERGFRID_RSS_URL ("https://bergfrid.com")
+            # Enlever le "/rss.xml" de la fin
+            base_url = BERGFRID_RSS_URL.removesuffix("/rss.xml") 
+            
+            # Si le lien est relatif (commence par '/') ou pointe vers localhost
+            if current_link.startswith('/') or "localhost" in current_link or "127.0.0.1" in current_link:
+                # Si le lien est relatif, on le joint à l'URL de base
+                if current_link.startswith('/'):
+                    corrected_link = base_url + current_link
+                # Si le lien est absolu mais local, on le remplace en utilisant le chemin (path)
+                else:
+                    # Exemple: remplace http://localhost:3000/blog/test/ par https://bergfrid.com/blog/test/
+                    path = current_link.split('://', 1)[-1].split('/', 1)[-1]
+                    corrected_link = base_url + '/' + path
+            else:
+                # Le lien semble déjà correct (absolu et non local)
+                corrected_link = current_link
+
+            url = corrected_link # On utilise le lien corrigé pour la suite
+            # -------------------------------------
+
             # SI NOUVEAU LIEN DÉTECTÉ
-            if current_link != last_link:
+            if url != last_link and last_link is not None:
                 
                 # Extraction des données
-                title = latest_entry.title
-                summary = latest_entry.description
-                # Nettoyage sommaire du HTML
-                summary = re.sub(r'<[^>]+>', '', summary) # Enlève la plupart des tags HTML
-                
-                url = current_link
-                
-                # Gestion des tags
-                tags = [f"#{t.term}" for t in latest_entry.tags] if 'tags' in latest_entry else []
-                tags_str = " ".join(tags)
-
-                # NOUVEAU : Détermination de l'importance et de l'émoji
-                importance_emoji, _ = determine_importance_and_emoji(summary)
-
-                print(f"📣 Nouvelle publication : {title} ({importance_emoji})")
-
-                # --- A. DISCORD (Utilisation de la fonction modulaire) ---
-                await publish_discord(title, summary, url, tags_str, importance_emoji)
-
-                # --- B. TELEGRAM (Utilisation de la fonction modulaire) ---
-                # Comme requests.post est synchrone, on utilise bot.loop.run_in_executor
-                # pour ne pas bloquer le bot Discord.
-                await bot.loop.run_in_executor(None, publish_telegram, title, summary, url, tags_str, importance_emoji)
-
-                # Mise à jour mémoire
-                write_memory(BERGFRID_MEMORY_FILE, current_link)
-                # Mise à jour du lien pour la prochaine itération
-                read_memory(BERGFRID_MEMORY_FILE) 
+                title = latest_entry.title 
 
     except Exception as e:
         print(f"⚠️ Erreur boucle RSS : {e}")
@@ -276,3 +274,4 @@ async def unset_news_channel(ctx):
 # --- Démarrage du bot ---
 # Utilisez bot.run(DISCORD_TOKEN) car nous utilisons commands.Bot
 bot.run(DISCORD_TOKEN)
+
