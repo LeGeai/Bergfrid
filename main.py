@@ -6,26 +6,16 @@ import asyncio
 import feedparser
 import json
 import re
-from urllib.parse import quote_plus
 
-# === CONFIGURATION DES VARIABLES D'ENVIRONNEMENT ===
+# === CONFIGURATION ESSENTIELLE ===
+# Les tokens et IDs DOIVENT être définis dans votre environnement.
 DISCORD_TOKEN = os.environ['DISCORD_TOKEN']
 TELEGRAM_TOKEN = os.environ['TELEGRAM_TOKEN']
 TELEGRAM_CHAT_ID = os.environ['TELEGRAM_CHAT_ID']
 
-# Placeholders pour les futures plateformes (à définir)
-TWITTER_API_URL = os.environ.get('TWITTER_API_URL', 'https://api.twitter.com/2/tweets')
-TWITTER_BEARER_TOKEN = os.environ.get('TWITTER_BEARER_TOKEN')
-
-WHATSAPP_API_URL = os.environ.get('WHATSAPP_API_URL', 'https://graph.facebook.com/v19.0/PHONE_ID/messages')
-WHATSAPP_TOKEN = os.environ.get('WHATSAPP_TOKEN')
-WHATSAPP_PHONE_ID = os.environ.get('WHATSAPP_PHONE_ID')
-
-LINKEDIN_ACCESS_TOKEN = os.environ.get('LINKEDIN_ACCESS_TOKEN')
-LINKEDIN_PERSON_URN = os.environ.get('LINKEDIN_PERSON_URN')
-
 # --- CONFIGURATION DISCORD ---
 try:
+    # ID du canal officiel (doit être un entier)
     DISCORD_OFFICIAL_CHANNEL_ID = int(os.environ['DISCORD_NEWS_CHANNEL_ID']) 
 except KeyError:
     DISCORD_OFFICIAL_CHANNEL_ID = 1330916602425770088 
@@ -33,14 +23,7 @@ except KeyError:
 # --- CONFIGURATION RSS et FICHIERS ---
 BERGFRID_RSS_URL = "https://bergfrid.com/rss.xml"
 BERGFRID_MEMORY_FILE = "last_article_link.txt"
-DISCORD_CHANNELS_FILE = "discord_channels.json"
-
-# --- LIMITES DE CONTENU ---
-DISCORD_TEXT_LIMIT = 2000
-TELEGRAM_TEXT_LIMIT = 4096
-TWITTER_TEXT_LIMIT = 280
-THREADS_TEXT_LIMIT = 500
-LINKEDIN_TEXT_LIMIT = 1300
+DISCORD_CHANNELS_FILE = "discord_channels.json" # Pour les serveurs secondaires
 
 # --- DISCORD SETUP ---
 intents = discord.Intents.default()
@@ -51,13 +34,23 @@ bot = commands.Bot(command_prefix='!', intents=intents)
 # --- HELPERS : Mémoire et Persistance ---
 
 def read_memory(file_path):
+    """Lit la dernière valeur depuis le fichier mémoire."""
     if not os.path.exists(file_path): return None
-    with open(file_path, "r", encoding="utf-8") as f: return f.read().strip()
+    try:
+        with open(file_path, "r", encoding="utf-8") as f:
+            # On nettoie les espaces/sauts de ligne et s'assure qu'il y a du contenu
+            content = f.read().strip()
+            return content if content else None
+    except Exception as e:
+        print(f"❌ Erreur lecture mémoire: {e}")
+        return None
 
 def write_memory(file_path, value):
+    """Écrit la valeur dans le fichier mémoire."""
     with open(file_path, "w", encoding="utf-8") as f: f.write(str(value))
 
 def load_discord_channels():
+    """Charge les IDs de canaux enregistrés (Serveur ID -> Canal ID)."""
     if not os.path.exists(DISCORD_CHANNELS_FILE): return {}
     with open(DISCORD_CHANNELS_FILE, "r", encoding="utf-8") as f:
         try:
@@ -66,26 +59,30 @@ def load_discord_channels():
             return {}
 
 def save_discord_channels(channels_dict):
+    """Sauvegarde les IDs de canaux enregistrés."""
     with open(DISCORD_CHANNELS_FILE, "w", encoding="utf-8") as f:
         json.dump(channels_dict, f, indent=4)
 
 # --- LOGIQUE DE CONTENU ---
 
 def determine_importance_and_emoji(summary):
+    """Détermine l'importance du contenu pour choisir un émoji."""
     if "critique" in summary.lower() or "urgent" in summary.lower():
         return "🔥", "Haute"
     return "📰", "Normale"
 
 def truncate_text(text, limit):
+    """Tronque le texte pour respecter la limite."""
+    # Limite Discord pour description d'embed : 4096 (on utilise 2000 par sécurité)
     if len(text) > limit:
         return text[:limit-3] + "..."
     return text
 
-# --- FONCTIONS DE PUBLICATION MODULAIRES (Omises pour la concision, elles sont inchangées) ---
+# --- FONCTIONS DE PUBLICATION ---
 
 async def publish_discord(title, summary, url, tags_str, importance_emoji):
     """Envoie l'article aux canaux Discord."""
-    truncated_summary = truncate_text(summary, DISCORD_TEXT_LIMIT) 
+    truncated_summary = truncate_text(summary, 2000) 
     
     embed = discord.Embed(
         title=title,
@@ -95,10 +92,8 @@ async def publish_discord(title, summary, url, tags_str, importance_emoji):
     )
     message_content = f"{importance_emoji} **NOUVEL ARTICLE** {tags_str}"
 
-    target_channel_ids = []
-    if DISCORD_OFFICIAL_CHANNEL_ID:
-         target_channel_ids.append(DISCORD_OFFICIAL_CHANNEL_ID)
-
+    target_channel_ids = [DISCORD_OFFICIAL_CHANNEL_ID]
+    
     channels_map = load_discord_channels()
     target_channel_ids.extend(list(channels_map.values()))
 
@@ -109,8 +104,6 @@ async def publish_discord(title, summary, url, tags_str, importance_emoji):
                 await channel.send(content=message_content, embed=embed)
             except Exception as e:
                 print(f"❌ Erreur Discord (Canal ID: {channel_id}): {e}")
-        else:
-            print(f"⚠️ Canal Discord ID {channel_id} introuvable.")
 
 def publish_telegram(title, summary, url, tags_str, importance_emoji):
     """Envoie l'article à Telegram (synchrone)."""
@@ -135,50 +128,27 @@ def publish_telegram(title, summary, url, tags_str, importance_emoji):
     except Exception as e:
         print(f"❌ Erreur Telegram: {e}")
 
-def publish_whatsapp(title, summary, url, tags_str, importance_emoji):
-    """Envoie l'article à WhatsApp (synchrone) (Placeholder)."""
-    if not WHATSAPP_TOKEN or not WHATSAPP_PHONE_ID:
-        print("ℹ️ WhatsApp : Non configuré (token ou ID cible manquant).")
-        return
-    # ... (logique d'envoi WhatsApp simulée) ...
-    print("✅ Message WhatsApp simulé envoyé.")
-
-def publish_twitter_threads(title, url, tags_str, importance_emoji, platform_limit):
-    """Gère la publication sur Twitter et Threads (Placeholder)."""
-    if platform_limit == TWITTER_TEXT_LIMIT and not TWITTER_BEARER_TOKEN:
-         print("ℹ️ Twitter : Non configuré (token manquant).")
-         return
-    # ... (logique d'envoi Twitter/Threads simulée) ...
-    print(f"✅ Post {'Twitter' if platform_limit == TWITTER_TEXT_LIMIT else 'Threads'} simulé généré.")
-
-def publish_linkedin(title, summary, url, tags_str, importance_emoji):
-    """Envoie l'article à LinkedIn (synchrone) (Placeholder)."""
-    if not LINKEDIN_ACCESS_TOKEN or not LINKEDIN_PERSON_URN:
-        print("ℹ️ LinkedIn : Non configuré (token ou URN manquant).")
-        return
-    # ... (logique d'envoi LinkedIn simulée) ...
-    print("✅ Post LinkedIn simulé généré.")
-
-
 # --- TÂCHE DE SURVEILLANCE RSS PRINCIPALE (CORRIGÉE) ---
 
 @tasks.loop(minutes=2.0)
 async def bergfrid_watcher():
-    """Vérifie le flux RSS et publie les nouveaux articles sur toutes les plateformes."""
+    """Vérifie le flux RSS et publie les nouveaux articles."""
     
     last_link = read_memory(BERGFRID_MEMORY_FILE)
     
+    # 1. Initialisation (Si aucune mémoire trouvée)
     if last_link is None:
+        print("⚠️ Démarrage à froid : Synchronisation RSS...")
         try:
             feed = feedparser.parse(BERGFRID_RSS_URL)
             if feed.entries:
-                # CORRECTION INITIALISATION : Stocker le lien brut lors du démarrage à froid.
-                # Cela permet à la correction de se faire à la première boucle suivante.
+                # IMPORTANT : Stocker le lien brut au démarrage à froid
                 last_link = feed.entries[0].link 
-                write_memory(BERGFRID_MEMORY_FILE, last_link) 
-        except Exception:
-            pass
-        return 
+                write_memory(BERGFRID_MEMORY_FILE, last_link)
+                print(f"✅ Synchronisé sur : {last_link}")
+        except Exception as e:
+            print(f"❌ Erreur init RSS : {e}")
+        return # Attendre la prochaine itération pour la surveillance
 
     # 2. Boucle de surveillance
     try:
@@ -206,8 +176,19 @@ async def bergfrid_watcher():
             url = corrected_link 
             # ---------------------------
 
-            # SI NOUVEAU LIEN DÉTECTÉ (La comparaison utilise le 'url' corrigé)
+            # SI NOUVEAU LIEN DÉTECTÉ OU SI LE LIEN CORRIGÉ EST DIFFÉRENT DE LA MÉMOIRE BRUTE
+            # Ceci devrait empêcher la boucle infinie si le lien en mémoire est encore l'ancien brute.
             if url != last_link: 
+                
+                # --- ÉVITER LE BUG DE BOUCLE INFINIE ---
+                # Si le dernier lien enregistré n'est PAS un lien corrigé,
+                # mais que le lien corrigé actuel correspond, ne pas publier
+                # et mettre à jour la mémoire avec le lien corrigé.
+                if current_link == last_link and url != last_link:
+                    print("ℹ️ Réparation de la mémoire : Mise à jour du lien brut en corrigé.")
+                    write_memory(BERGFRID_MEMORY_FILE, url) 
+                    return
+                # ----------------------------------------
                 
                 # Extraction & Préparation des données
                 title = latest_entry.title
@@ -221,13 +202,11 @@ async def bergfrid_watcher():
 
                 # --- ENVOI PAR PLATEFORME ---
                 await publish_discord(title, summary, url, tags_str, importance_emoji)
+                
+                # Exécution synchrone dans un thread
                 bot.loop.run_in_executor(None, publish_telegram, title, summary, url, tags_str, importance_emoji)
-                bot.loop.run_in_executor(None, publish_whatsapp, title, summary, url, tags_str, importance_emoji)
-                bot.loop.run_in_executor(None, publish_twitter_threads, title, url, tags_str, importance_emoji, TWITTER_TEXT_LIMIT)
-                bot.loop.run_in_executor(None, publish_twitter_threads, title, url, tags_str, importance_emoji, THREADS_TEXT_LIMIT)
-                bot.loop.run_in_executor(None, publish_linkedin, title, summary, url, tags_str, importance_emoji)
-
-                # CORRECTION CRUCIALE : On sauvegarde le lien CORRIGÉ (url) pour la prochaine itération
+                
+                # CORRECTION : On sauvegarde le lien CORRIGÉ (url)
                 write_memory(BERGFRID_MEMORY_FILE, url) 
                 last_link = url 
 
@@ -235,17 +214,19 @@ async def bergfrid_watcher():
         print(f"⚠️ Erreur boucle RSS principale : {e}")
 
 
-# --- ÉVÉNEMENTS & COMMANDES DISCORD (Omises pour la concision) ---
+# --- ÉVÉNEMENTS & COMMANDES DISCORD ---
+
 @bot.event
 async def on_ready():
     print(f'✅ Connecté : {bot.user}')
     if not bergfrid_watcher.is_running():
         bergfrid_watcher.start()
-        print("🚀 Tâche de surveillance RSS démarrée.")
+        print("🚀 Tâche de surveillance RSS démarrée (Mode Simple).")
 
 @bot.command(name="setnews")
 @commands.has_permissions(manage_channels=True)
 async def set_news_channel(ctx, channel: discord.TextChannel = None):
+    """Définit le canal de news pour ce serveur. Usage : !setnews [\#canal]"""
     channel = ctx.channel if channel is None else channel
     channels_map = load_discord_channels()
     guild_id_str = str(ctx.guild.id)
@@ -256,6 +237,7 @@ async def set_news_channel(ctx, channel: discord.TextChannel = None):
 @bot.command(name="unsetnews")
 @commands.has_permissions(manage_channels=True)
 async def unset_news_channel(ctx):
+    """Retire l'enregistrement du canal de news. Usage : !unsetnews"""
     channels_map = load_discord_channels()
     guild_id_str = str(ctx.guild.id)
     if guild_id_str in channels_map:
