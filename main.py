@@ -5,37 +5,49 @@ import os
 import asyncio
 import feedparser
 import json
-import re # Pour le nettoyage de texte HTML
+import re
+from urllib.parse import quote_plus # Pour encoder les URL dans les posts
 
-# === CONFIGURATION ===
-# Les tokens et IDs sont récupérés des variables d'environnement.
+# === CONFIGURATION DES VARIABLES D'ENVIRONNEMENT ===
+# Les tokens et IDs DOIVENT être définis dans votre environnement.
 DISCORD_TOKEN = os.environ['DISCORD_TOKEN']
 TELEGRAM_TOKEN = os.environ['TELEGRAM_TOKEN']
 TELEGRAM_CHAT_ID = os.environ['TELEGRAM_CHAT_ID']
 
-# Canal Discord "Officiel" (Canal par défaut qui ne changera jamais)
-# On le garde en dur OU on le met dans une variable d'environnement pour plus de flexibilité.
-# J'ai choisi de le garder en variable d'environnement pour coller à la pratique standard.
+# Placeholders pour les futures plateformes (à définir)
+TWITTER_API_URL = os.environ.get('TWITTER_API_URL', 'https://api.twitter.com/2/tweets')
+TWITTER_BEARER_TOKEN = os.environ.get('TWITTER_BEARER_TOKEN')
+
+WHATSAPP_API_URL = os.environ.get('WHATSAPP_API_URL', 'https://graph.facebook.com/v19.0/PHONE_ID/messages')
+WHATSAPP_TOKEN = os.environ.get('WHATSAPP_TOKEN')
+WHATSAPP_PHONE_ID = os.environ.get('WHATSAPP_PHONE_ID') # Numéro cible ou ID du canal
+
+LINKEDIN_ACCESS_TOKEN = os.environ.get('LINKEDIN_ACCESS_TOKEN')
+LINKEDIN_PERSON_URN = os.environ.get('LINKEDIN_PERSON_URN')
+
+# --- CONFIGURATION DISCORD ---
 try:
-    # L'ID DOIT être un entier
+    # ID du canal officiel (doit être un entier)
     DISCORD_OFFICIAL_CHANNEL_ID = int(os.environ['DISCORD_NEWS_CHANNEL_ID']) 
 except KeyError:
-    # Si la variable n'est pas trouvée (pour le test), on met une valeur par défaut.
-    # Dans un environnement de production, cette ligne devrait générer une erreur.
+    # Fallback pour le développement local si la variable n'est pas définie
     DISCORD_OFFICIAL_CHANNEL_ID = 1330916602425770088 
 
-# Fichiers de persistance
+# --- CONFIGURATION RSS et FICHIERS ---
 BERGFRID_RSS_URL = "https://bergfrid.com/rss.xml"
 BERGFRID_MEMORY_FILE = "last_article_link.txt"
-DISCORD_CHANNELS_FILE = "discord_channels.json" # Pour les serveurs supplémentaires
+DISCORD_CHANNELS_FILE = "discord_channels.json" # Serveur ID -> Canal ID
 
-# Limites de caractères pour les messages
-DISCORD_TEXT_LIMIT = 4000
-TELEGRAM_TEXT_LIMIT = 4096 # Limite réelle est de 4096 octets
+# --- LIMITES DE CONTENU ---
+# Limites recommandées pour éviter les erreurs
+DISCORD_TEXT_LIMIT = 2000 # Description d'embed
+TELEGRAM_TEXT_LIMIT = 4096
+TWITTER_TEXT_LIMIT = 280
+THREADS_TEXT_LIMIT = 500
+LINKEDIN_TEXT_LIMIT = 1300
 
-# Discord Setup (Utilisation de commands.Bot pour les commandes)
+# --- DISCORD SETUP ---
 intents = discord.Intents.default()
-# Nécessaire pour les commandes sur les serveurs
 intents.message_content = True 
 intents.guilds = True 
 bot = commands.Bot(command_prefix='!', intents=intents)
@@ -43,101 +55,73 @@ bot = commands.Bot(command_prefix='!', intents=intents)
 # --- HELPERS : Mémoire et Persistance ---
 
 def read_memory(file_path):
-    """Lit une valeur simple depuis un fichier."""
     if not os.path.exists(file_path): return None
     with open(file_path, "r", encoding="utf-8") as f: return f.read().strip()
 
 def write_memory(file_path, value):
-    """Écrit une valeur simple dans un fichier."""
     with open(file_path, "w", encoding="utf-8") as f: f.write(str(value))
 
 def load_discord_channels():
-    """Charge les IDs de canaux enregistrés (Serveur ID -> Canal ID)."""
     if not os.path.exists(DISCORD_CHANNELS_FILE): return {}
     with open(DISCORD_CHANNELS_FILE, "r", encoding="utf-8") as f:
         try:
             return json.load(f)
         except json.JSONDecodeError:
-            return {} # Retourne vide en cas de fichier corrompu
+            return {}
 
 def save_discord_channels(channels_dict):
-    """Sauvegarde les IDs de canaux enregistrés."""
     with open(DISCORD_CHANNELS_FILE, "w", encoding="utf-8") as f:
         json.dump(channels_dict, f, indent=4)
 
-# --- NOUVELLE LOGIQUE : Gestion de Contenu ---
+# --- LOGIQUE DE CONTENU ---
 
 def determine_importance_and_emoji(summary):
-    """
-    Détermine l'importance du contenu pour choisir un émoji.
-    C'est ici qu'une logique d'analyse de texte plus complexe serait ajoutée.
-    Pour l'instant, c'est une implémentation simple/par défaut.
-    """
-    # Règle simple : Si le résumé contient "critique" ou "urgent", importance élevée.
+    """Détermine l'importance du contenu pour choisir un émoji."""
     if "critique" in summary.lower() or "urgent" in summary.lower():
         return "🔥", "Haute"
     return "📰", "Normale"
 
 def truncate_text(text, limit):
-    """Tronque le texte pour respecter la limite Discord/Telegram."""
+    """Tronque le texte pour respecter la limite."""
     if len(text) > limit:
         return text[:limit-3] + "..."
     return text
 
-# --- TÂCHES D'ENVOI ---
+# --- FONCTIONS DE PUBLICATION MODULAIRES ---
 
-async def publish_discord(title, summary, url, tags_str, importance_emoji, is_official=False):
-    """Envoie l'article à tous les canaux Discord enregistrés et au canal officiel."""
+async def publish_discord(title, summary, url, tags_str, importance_emoji):
+    """Envoie l'article aux canaux Discord."""
+    truncated_summary = truncate_text(summary, DISCORD_TEXT_LIMIT) 
     
-    # 1. Préparation du contenu
-    # Tronquer le résumé pour l'embed (max 4096 caractères pour la description, mais on est prudent)
-    truncated_summary = truncate_text(summary, 2000) 
-    
-    # Création de l'Embed
     embed = discord.Embed(
         title=title,
         url=url,
         description=truncated_summary,
-        color=0x000000 # Noir
+        color=0x000000
     )
-    
-    # Contenu du message (au-dessus de l'embed)
     message_content = f"{importance_emoji} **NOUVEL ARTICLE** {tags_str}"
 
-    # 2. Canaux Cibles
     target_channel_ids = []
-    
-    # Canal Officiel (toujours inclus)
     if DISCORD_OFFICIAL_CHANNEL_ID:
          target_channel_ids.append(DISCORD_OFFICIAL_CHANNEL_ID)
 
-    # Canaux Supplémentaires (chargés depuis le fichier)
-    if not is_official:
-        # On ne charge la liste que si on en a besoin
-        channels_map = load_discord_channels()
-        target_channel_ids.extend(list(channels_map.values()))
+    channels_map = load_discord_channels()
+    target_channel_ids.extend(list(channels_map.values()))
 
-    # 3. Envoi
-    for channel_id in set(target_channel_ids): # Utiliser un set pour éviter les doublons
+    for channel_id in set(target_channel_ids):
         channel = bot.get_channel(channel_id)
         if channel:
             try:
                 await channel.send(content=message_content, embed=embed)
             except Exception as e:
-                print(f"Erreur Discord (Canal ID: {channel_id}): {e}")
+                print(f"❌ Erreur Discord (Canal ID: {channel_id}): {e}")
         else:
             print(f"⚠️ Canal Discord ID {channel_id} introuvable.")
 
-
 def publish_telegram(title, summary, url, tags_str, importance_emoji):
-    """Envoie l'article à Telegram (synchrone car requests)."""
-    
-    # 1. Préparation du contenu
-    # Le résumé doit être nettoyé du HTML (déjà fait dans bergfrid_watcher)
-    # On tronque pour être sûr
+    """Envoie l'article à Telegram (synchrone)."""
     truncated_summary = truncate_text(summary, 3000) 
     
-    # Format : Émoji/Titre (Gras) / Résumé / Lien / Tags (Italique)
     telegram_text = (
         f"{importance_emoji} <b>{title}</b>\n\n"
         f"{truncated_summary}\n\n"
@@ -152,35 +136,99 @@ def publish_telegram(title, summary, url, tags_str, importance_emoji):
         "disable_web_page_preview": False
     }
 
-    # 2. Envoi
     try:
-        # On utilise sendMessage uniquement
         requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage", data=telegram_data)
     except Exception as e:
-        print(f"Erreur Telegram: {e}")
+        print(f"❌ Erreur Telegram: {e}")
 
-# --- TÂCHE DE SURVEILLANCE RSS (Modifiée) ---
+def publish_whatsapp(title, summary, url, tags_str, importance_emoji):
+    """Envoie l'article à WhatsApp (synchrone) (Placeholder)."""
+    if not WHATSAPP_TOKEN or not WHATSAPP_PHONE_ID:
+        print("ℹ️ WhatsApp : Non configuré (token ou ID cible manquant).")
+        return
+
+    # WhatsApp est souvent limité aux templates. Ceci est un message texte simple.
+    whatsapp_text = (
+        f"{importance_emoji} *{title}*\n\n"
+        f"{truncate_text(summary, 300)}\n\n"
+        f"🔗 {url}"
+    )
+    
+    headers = {
+        'Authorization': f'Bearer {WHATSAPP_TOKEN}',
+        'Content-Type': 'application/json'
+    }
+    payload = {
+        "messaging_product": "whatsapp",
+        "to": WHATSAPP_PHONE_ID,
+        "type": "text",
+        "text": {"body": whatsapp_text}
+    }
+    
+    try:
+        requests.post(WHATSAPP_API_URL, headers=headers, json=payload)
+        print("✅ Message WhatsApp simulé envoyé.")
+    except Exception as e:
+        print(f"❌ Erreur WhatsApp: {e}")
+
+def publish_twitter_threads(title, url, tags_str, importance_emoji, platform_limit):
+    """Gère la publication sur Twitter et Threads (très similaires, synchrones)."""
+    if platform_limit == TWITTER_TEXT_LIMIT:
+        print("ℹ️ Twitter : Non configuré (token manquant).")
+        return
+    if platform_limit == THREADS_TEXT_LIMIT:
+        print("ℹ️ Threads : Non configuré (token manquant).")
+        return
+        
+    # Format simple : Titre + Tags + Lien (le plus important pour respecter la limite)
+    post_content = f"{importance_emoji} {title} {tags_str} | Lire: {url}"
+    post_content = truncate_text(post_content, platform_limit)
+
+    # --- SIMULATION D'ENVOI ---
+    # Ici, vous auriez besoin des vrais clients et tokens d'API pour Twitter/Threads
+    print(f"✅ Post {platform_limit}-caractères généré : {post_content}")
+    # Simuler un appel API réussi
+    
+
+def publish_linkedin(title, summary, url, tags_str, importance_emoji):
+    """Envoie l'article à LinkedIn (synchrone) (Placeholder)."""
+    if not LINKEDIN_ACCESS_TOKEN or not LINKEDIN_PERSON_URN:
+        print("ℹ️ LinkedIn : Non configuré (token ou URN manquant).")
+        return
+
+    # Format professionnel : Titre, Résumé court, Lien
+    post_content = (
+        f"{importance_emoji} {title}\n\n"
+        f"{truncate_text(summary, LINKEDIN_TEXT_LIMIT - 100)}\n\n"
+        f"{tags_str}\n\n"
+        f"{url}"
+    )
+    
+    # --- SIMULATION D'ENVOI ---
+    # L'API LinkedIn est complexe (registerUpload, création de post)
+    print(f"✅ Post LinkedIn simulé généré : {truncate_text(post_content, LINKEDIN_TEXT_LIMIT)}")
+
+# --- TÂCHE DE SURVEILLANCE RSS PRINCIPALE ---
 
 @tasks.loop(minutes=2.0)
 async def bergfrid_watcher():
-    """Tâche périodique de vérification du flux RSS et de publication des nouveaux articles."""
+    """Vérifie le flux RSS et publie les nouveaux articles sur toutes les plateformes."""
     
-    # 1. Initialisation (Lecture de la dernière publication)
     last_link = read_memory(BERGFRID_MEMORY_FILE)
     
     if last_link is None:
-        print("⚠️ Démarrage à froid : Synchronisation RSS...")
+        # 1. Initialisation (Lecture et écriture du dernier lien)
         try:
             feed = feedparser.parse(BERGFRID_RSS_URL)
             if feed.entries:
                 last_link = feed.entries[0].link
                 write_memory(BERGFRID_MEMORY_FILE, last_link)
-                print(f"✅ Synchronisé sur : {last_link}")
-        except Exception as e:
-            print(f"❌ Erreur init RSS : {e}")
-        return # Fin de l'initialisation, on attend la prochaine boucle
+        except Exception:
+            pass # Ne pas bloquer l'initialisation pour les erreurs RSS
 
-    # 2. Boucle de surveillance (le corps de la tâche)
+        return 
+
+    # 2. Boucle de surveillance
     try:
         feed = feedparser.parse(BERGFRID_RSS_URL)
         
@@ -188,64 +236,78 @@ async def bergfrid_watcher():
             latest_entry = feed.entries[0]
             current_link = latest_entry.link
             
-            # --- NOUVEAU : CORRECTION DU LIEN ---
-            # Si le lien commence par 'http://localhost' ou est relatif,
-            # nous le préfixons avec l'URL de base du site (déduite du flux RSS).
-            
-            # On extrait le domaine de BERGFRID_RSS_URL ("https://bergfrid.com")
-            # Enlever le "/rss.xml" de la fin
-            base_url = BERGFRID_RSS_URL.removesuffix("/rss.xml") 
-            
-            # Si le lien est relatif (commence par '/') ou pointe vers localhost
-            if current_link.startswith('/') or "localhost" in current_link or "127.0.0.1" in current_link:
-                # Si le lien est relatif, on le joint à l'URL de base
+            # --- CORRECTION DU LIEN (Stratégie de substitution agressive) ---
+            base_domain = "https://bergfrid.com"
+            if "localhost" in current_link or "127.0.0.1" in current_link or current_link.startswith('/'):
                 if current_link.startswith('/'):
-                    corrected_link = base_url + current_link
-                # Si le lien est absolu mais local, on le remplace en utilisant le chemin (path)
+                    path = current_link
                 else:
-                    # Exemple: remplace http://localhost:3000/blog/test/ par https://bergfrid.com/blog/test/
-                    path = current_link.split('://', 1)[-1].split('/', 1)[-1]
-                    corrected_link = base_url + '/' + path
+                    try:
+                        path_parts = current_link.split('://', 1)[-1].split('/', 1)
+                        path = '/' + path_parts[-1] if len(path_parts) > 1 else ''
+                    except Exception:
+                        path = ""
+                corrected_link = base_domain + path
             else:
-                # Le lien semble déjà correct (absolu et non local)
                 corrected_link = current_link
 
-            url = corrected_link # On utilise le lien corrigé pour la suite
-            # -------------------------------------
+            url = corrected_link 
+            # -----------------------------------------------------------------
 
             # SI NOUVEAU LIEN DÉTECTÉ
-            if url != last_link and last_link is not None:
+            if url != last_link:
                 
-                # Extraction des données
-                title = latest_entry.title 
+                # Extraction & Préparation des données
+                title = latest_entry.title
+                summary = latest_entry.description
+                summary = re.sub(r'<[^>]+>', '', summary) # Nettoyage HTML
+                tags = [f"#{t.term}" for t in latest_entry.tags] if 'tags' in latest_entry else []
+                tags_str = " ".join(tags)
+                importance_emoji, _ = determine_importance_and_emoji(summary)
+
+                print(f"📣 Nouvelle publication : {title} ({importance_emoji})")
+
+                # --- ENVOI PAR PLATEFORME ---
+                
+                # A. Discord (Asynchrone)
+                await publish_discord(title, summary, url, tags_str, importance_emoji)
+
+                # B. Telegram (Synchrone, exécuté dans un thread pour ne pas bloquer)
+                bot.loop.run_in_executor(None, publish_telegram, title, summary, url, tags_str, importance_emoji)
+
+                # C. WhatsApp (Synchrone, exécuté dans un thread)
+                bot.loop.run_in_executor(None, publish_whatsapp, title, summary, url, tags_str, importance_emoji)
+
+                # D. Twitter (X) & Threads (Synchrone, exécuté dans un thread)
+                bot.loop.run_in_executor(None, publish_twitter_threads, title, url, tags_str, importance_emoji, TWITTER_TEXT_LIMIT)
+                bot.loop.run_in_executor(None, publish_twitter_threads, title, url, tags_str, importance_emoji, THREADS_TEXT_LIMIT)
+                
+                # E. LinkedIn (Synchrone, exécuté dans un thread)
+                bot.loop.run_in_executor(None, publish_linkedin, title, summary, url, tags_str, importance_emoji)
+
+                # Mise à jour mémoire
+                write_memory(BERGFRID_MEMORY_FILE, current_link) 
+                last_link = current_link 
 
     except Exception as e:
-        print(f"⚠️ Erreur boucle RSS : {e}")
+        print(f"⚠️ Erreur boucle RSS principale : {e}")
 
-# --- ÉVÉNEMENTS DISCORD ---
+
+# --- ÉVÉNEMENTS & COMMANDES DISCORD ---
 
 @bot.event
 async def on_ready():
     """Se déclenche quand le bot est prêt."""
-    print(f'✅ Connecté : {bot.user} (ID: {bot.user.id})')
-    
-    # Démarrage de la tâche de surveillance
+    print(f'✅ Connecté : {bot.user}')
     if not bergfrid_watcher.is_running():
         bergfrid_watcher.start()
         print("🚀 Tâche de surveillance RSS démarrée.")
 
-# --- COMMANDES DISCORD ---
-
 @bot.command(name="setnews")
 @commands.has_permissions(manage_channels=True)
 async def set_news_channel(ctx, channel: discord.TextChannel = None):
-    """
-    Définit le canal actuel ou spécifié comme canal de news pour ce serveur.
-    Usage : !setnews [\#canal]
-    """
-    if channel is None:
-        channel = ctx.channel # Utilise le canal où la commande est tapée
-
+    """Définit le canal de news pour ce serveur. Usage : !setnews [\#canal]"""
+    channel = ctx.channel if channel is None else channel
     channels_map = load_discord_channels()
     guild_id_str = str(ctx.guild.id)
     
@@ -257,10 +319,7 @@ async def set_news_channel(ctx, channel: discord.TextChannel = None):
 @bot.command(name="unsetnews")
 @commands.has_permissions(manage_channels=True)
 async def unset_news_channel(ctx):
-    """
-    Retire l'enregistrement du canal de news pour ce serveur.
-    Usage : !unsetnews
-    """
+    """Retire l'enregistrement du canal de news. Usage : !unsetnews"""
     channels_map = load_discord_channels()
     guild_id_str = str(ctx.guild.id)
     
@@ -272,6 +331,6 @@ async def unset_news_channel(ctx):
         await ctx.send("ℹ️ Aucun canal de nouvelles n'était configuré pour ce serveur.")
 
 # --- Démarrage du bot ---
-# Utilisez bot.run(DISCORD_TOKEN) car nous utilisons commands.Bot
-bot.run(DISCORD_TOKEN)
-
+# Utilisez bot.run(DISCORD_TOKEN)
+if __name__ == '__main__':
+    bot.run(DISCORD_TOKEN)
