@@ -1,5 +1,4 @@
-discord.py
-beautifulsoup4
-feedparser
-aiohttp
-
+discord.py>=2.3,<3.0
+feedparser>=6.0,<7.0
+aiohttp>=3.9,<4.0
+beautifulsoup4>=4.12,<5.0

@@ -1,0 +1,6 @@
+{
+    "enabled": ["discord", "telegram"],
+    "discord": {},
+    "telegram": {}
+  }
+  

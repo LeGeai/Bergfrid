@@ -1,0 +1,16 @@
+from dataclasses import dataclass
+from datetime import datetime
+from typing import Optional, List
+
+
+@dataclass(frozen=True)
+class Article:
+    id: str
+    title: str
+    url: str
+    summary: str
+    tags: List[str]
+    author: str
+    category: str
+    published_at: Optional[datetime]  # UTC si possible
+    source: str = "Bergfrid"
