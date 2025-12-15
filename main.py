@@ -6,6 +6,7 @@ import asyncio
 import logging
 from typing import Any, Dict, Optional, List, Tuple
 from urllib.parse import urljoin, urlparse, parse_qsl, urlencode, urlunparse
+from datetime import datetime, timezone
 
 import discord
 from discord.ext import commands, tasks
@@ -15,11 +16,11 @@ import feedparser
 try:
     import aiohttp
 except ImportError:
-    aiohttp = None  # Telegram async nécessite aiohttp
+    aiohttp = None
 
 
 # =========================
-# CONFIGURATION
+# CONFIG
 # =========================
 
 DISCORD_TOKEN = os.environ["DISCORD_TOKEN"]
@@ -29,31 +30,28 @@ TELEGRAM_CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
 DISCORD_OFFICIAL_CHANNEL_ID = int(os.getenv("DISCORD_NEWS_CHANNEL_ID", "1330916602425770088"))
 
 BERGFRID_RSS_URL = "https://bergfrid.com/rss.xml"
+BASE_DOMAIN = "https://bergfrid.com"
+
 STATE_FILE = os.getenv("STATE_FILE", "bergfrid_state.json")
 DISCORD_CHANNELS_FILE = os.getenv("DISCORD_CHANNELS_FILE", "discord_channels.json")
 
-BASE_DOMAIN = "https://bergfrid.com"
-
 RSS_POLL_MINUTES = float(os.getenv("RSS_POLL_MINUTES", "2.0"))
-DISCORD_SEND_DELAY_SECONDS = float(os.getenv("DISCORD_SEND_DELAY_SECONDS", "0.2"))  # anti rate-limit
-MAX_BACKLOG_POSTS_PER_TICK = int(os.getenv("MAX_BACKLOG_POSTS_PER_TICK", "30"))     # garde-fou
+DISCORD_SEND_DELAY_SECONDS = float(os.getenv("DISCORD_SEND_DELAY_SECONDS", "0.2"))
+MAX_BACKLOG_POSTS_PER_TICK = int(os.getenv("MAX_BACKLOG_POSTS_PER_TICK", "20"))
 
-# Résumé "média": plus court = meilleur taux de lecture
-DISCORD_SUMMARY_LIMIT = int(os.getenv("DISCORD_SUMMARY_LIMIT", "1200"))
-TELEGRAM_SUMMARY_LIMIT = int(os.getenv("TELEGRAM_SUMMARY_LIMIT", "900"))
+# Rendu
+DISCORD_SUMMARY_MAX = int(os.getenv("DISCORD_SUMMARY_MAX", "2200"))
+TELEGRAM_SUMMARY_MAX = int(os.getenv("TELEGRAM_SUMMARY_MAX", "900"))
 
-# Taille des journaux "déjà envoyé" (anti-doublons en cas de partial failure)
-SENT_RING_SIZE = int(os.getenv("SENT_RING_SIZE", "100"))
+# Mémoire anti doublons
+SENT_RING_MAX = int(os.getenv("SENT_RING_MAX", "250"))
 
 
 # =========================
-# LOGGING
+# LOGS
 # =========================
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s %(message)s",
-)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("bergfrid-bot")
 
 
@@ -62,48 +60,51 @@ log = logging.getLogger("bergfrid-bot")
 # =========================
 
 intents = discord.Intents.default()
-intents.message_content = True  # nécessaire pour les commandes préfixées !
+intents.message_content = True
 intents.guilds = True
-
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 _http_session: Optional["aiohttp.ClientSession"] = None
 
 
 # =========================
-# PERSISTENCE (STATE)
+# STATE / PERSISTENCE
 # =========================
 
-def _atomic_write_json(file_path: str, data: Dict[str, Any]) -> None:
-    tmp_path = f"{file_path}.tmp"
-    with open(tmp_path, "w", encoding="utf-8") as f:
+def _atomic_write_json(path: str, data: Dict[str, Any]) -> None:
+    tmp = f"{path}.tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
-    os.replace(tmp_path, file_path)
-
-
-def _default_state() -> Dict[str, Any]:
-    # last_id = dernier item complètement livré (Discord + Telegram)
-    return {
-        "last_id": None,
-        "etag": None,
-        "modified": None,
-        "sent": {
-            "discord": [],
-            "telegram": [],
-        },
-    }
+    os.replace(tmp, path)
 
 
 def load_state() -> Dict[str, Any]:
+    """
+    Schema:
+    {
+      "last_id": "...",
+      "etag": "...",
+      "modified": ...,
+      "sent": {
+         "discord": ["id1","id2",...],
+         "telegram": ["id1","id2",...]
+      }
+    }
+    """
     if not os.path.exists(STATE_FILE):
-        return _default_state()
+        return {
+            "last_id": None,
+            "etag": None,
+            "modified": None,
+            "sent": {"discord": [], "telegram": []},
+        }
 
     try:
         with open(STATE_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
         if not isinstance(data, dict):
-            return _default_state()
-        # Normalisation
+            raise ValueError("state not dict")
+
         data.setdefault("last_id", None)
         data.setdefault("etag", None)
         data.setdefault("modified", None)
@@ -113,23 +114,41 @@ def load_state() -> Dict[str, Any]:
         return data
     except Exception as e:
         log.error("Erreur lecture state: %s", e)
-        return _default_state()
+        return {
+            "last_id": None,
+            "etag": None,
+            "modified": None,
+            "sent": {"discord": [], "telegram": []},
+        }
 
 
 def save_state(state: Dict[str, Any]) -> None:
     try:
-        # ring buffer
+        # Nettoyage ring buffers
         for k in ("discord", "telegram"):
             lst = state.get("sent", {}).get(k, [])
-            if isinstance(lst, list) and len(lst) > SENT_RING_SIZE:
-                state["sent"][k] = lst[-SENT_RING_SIZE:]
+            if isinstance(lst, list) and len(lst) > SENT_RING_MAX:
+                state["sent"][k] = lst[-SENT_RING_MAX:]
         _atomic_write_json(STATE_FILE, state)
     except Exception as e:
         log.error("Erreur écriture state: %s", e)
 
 
+def sent_has(state: Dict[str, Any], platform: str, entry_id: str) -> bool:
+    return entry_id in (state.get("sent", {}).get(platform, []) or [])
+
+
+def sent_add(state: Dict[str, Any], platform: str, entry_id: str) -> None:
+    state.setdefault("sent", {}).setdefault(platform, [])
+    lst = state["sent"][platform]
+    if entry_id not in lst:
+        lst.append(entry_id)
+        if len(lst) > SENT_RING_MAX:
+            state["sent"][platform] = lst[-SENT_RING_MAX:]
+
+
 # =========================
-# DISCORD CHANNELS (MULTI-SERVEURS)
+# DISCORD CHANNELS (MULTI SERVEURS)
 # =========================
 
 def load_discord_channels() -> Dict[str, int]:
@@ -152,30 +171,25 @@ def load_discord_channels() -> Dict[str, int]:
 
 
 def save_discord_channels(channels_dict: Dict[str, int]) -> None:
-    try:
-        _atomic_write_json(DISCORD_CHANNELS_FILE, channels_dict)
-    except Exception as e:
-        log.error("Erreur écriture discord_channels: %s", e)
+    _atomic_write_json(DISCORD_CHANNELS_FILE, channels_dict)
 
 
 # =========================
-# CONTENU / FORMAT
+# HELPERS CONTENU
 # =========================
-
-def determine_importance_emoji(text: str) -> str:
-    t = (text or "").lower()
-    if any(k in t for k in ["critique", "urgent", "alerte", "attaque", "explosion", "guerre", "terror"]):
-        return "🔥"
-    return "📰"
-
 
 def truncate_text(text: str, limit: int) -> str:
-    if text is None:
-        return ""
-    text = str(text)
+    text = text or ""
     if len(text) > limit:
         return text[: max(0, limit - 3)] + "..."
     return text
+
+
+def determine_importance_emoji(text: str) -> str:
+    t = (text or "").lower()
+    if any(k in t for k in ["critique", "urgent", "alerte", "attaque", "explosion", "guerre"]):
+        return "🔥"
+    return "📰"
 
 
 def entry_stable_id(entry: Any) -> str:
@@ -197,7 +211,6 @@ def extract_html(entry: Any) -> str:
 
 def strip_html_to_text(raw_html: str) -> str:
     raw_html = raw_html or ""
-    # Si BeautifulSoup dispo, c'est le mieux
     try:
         from bs4 import BeautifulSoup  # type: ignore
         text = BeautifulSoup(raw_html, "html.parser").get_text("\n")
@@ -213,44 +226,115 @@ def strip_html_to_text(raw_html: str) -> str:
         return txt
 
 
+def prettify_summary(text: str, max_chars: int, prefix: str = "› ") -> str:
+    text = (text or "").strip()
+    text = re.sub(r"\n{3,}", "\n\n", text)
+
+    # Paragraphes non vides
+    paras = [p.strip() for p in text.split("\n") if p.strip()]
+
+    # Limite pour éviter les pavés
+    if len(paras) > 7:
+        paras = paras[:7]
+
+    pretty = "\n\n".join(prefix + p for p in paras)
+    return truncate_text(pretty, max_chars)
+
+
 def extract_tags(entry: Any) -> str:
-    tags = []
-    entry_tags = getattr(entry, "tags", None)
+    tags_out: List[str] = []
+
+    entry_tags = getattr(entry, "tags", None) or []
+    for t in entry_tags:
+        term = getattr(t, "term", None)
+        if not term:
+            continue
+        term = str(term).strip()
+
+        # Si le RSS met "tag1, tag2" dans UNE seule category, on split
+        parts = re.split(r"[;,/|]\s*|\s+#", term.replace("#", " #").strip())
+        for p in parts:
+            p = re.sub(r"\s+", "", p.strip())
+            if not p:
+                continue
+            if not p.startswith("#"):
+                p = "#" + p
+            tags_out.append(p)
+
+    # Unique stable
+    seen = set()
+    clean = []
+    for x in tags_out:
+        key = x.lower()
+        if key not in seen:
+            seen.add(key)
+            clean.append(x)
+
+    return " ".join(clean)
+
+
+def extract_author(entry: Any) -> str:
+    a = getattr(entry, "author", None)
+    if a:
+        return str(a).strip()
+    dc = getattr(entry, "dc_creator", None)
+    if dc:
+        return str(dc).strip()
+    return "Rédaction"
+
+
+def extract_category(entry: Any) -> str:
+    # Certains flux mettent category comme tags[0], sinon parfois entry.category
+    c = getattr(entry, "category", None)
+    if c:
+        return str(c).strip()
+    # fallback: premier tag sans #
+    entry_tags = getattr(entry, "tags", None) or []
     if entry_tags:
-        for t in entry_tags:
-            term = getattr(t, "term", None)
-            if term:
-                term_clean = re.sub(r"\s+", "", str(term))
-                tags.append(f"#{term_clean}")
-    return " ".join(tags)
+        term = getattr(entry_tags[0], "term", None)
+        if term:
+            return str(term).strip()
+    return ""
 
 
-def add_utm(url: str, source: str) -> str:
-    """Ajoute des UTM sans casser l'URL."""
+def extract_pub_dt(entry: Any) -> Optional[datetime]:
+    # feedparser peut donner published_parsed (time.struct_time)
+    st = getattr(entry, "published_parsed", None) or getattr(entry, "updated_parsed", None)
+    if st:
+        try:
+            return datetime(*st[:6], tzinfo=timezone.utc)
+        except Exception:
+            pass
+    # fallback sur published string RFC822
+    pub = getattr(entry, "published", None) or getattr(entry, "updated", None)
+    if pub:
+        try:
+            # feedparser fournit souvent déjà struct_time. Ici fallback minimal.
+            # On évite de dépendre d'email.utils ici pour rester simple.
+            return datetime.now(timezone.utc)
+        except Exception:
+            pass
+    return None
+
+
+def format_date(dt: Optional[datetime]) -> str:
+    if not dt:
+        return ""
+    # format court lisible
+    return dt.astimezone(timezone.utc).strftime("%d %b %Y")
+
+
+def add_utm(url: str, source: str, medium: str = "social", campaign: str = "rss") -> str:
     try:
-        parts = urlparse(url)
-        q = dict(parse_qsl(parts.query, keep_blank_values=True))
+        u = urlparse(url)
+        q = dict(parse_qsl(u.query, keep_blank_values=True))
         q.setdefault("utm_source", source)
-        q.setdefault("utm_medium", "social")
-        q.setdefault("utm_campaign", "rss")
+        q.setdefault("utm_medium", medium)
+        q.setdefault("utm_campaign", campaign)
         new_query = urlencode(q, doseq=True)
-        return urlunparse((parts.scheme, parts.netloc, parts.path, parts.params, new_query, parts.fragment))
+        return urlunparse((u.scheme, u.netloc, u.path, u.params, new_query, u.fragment))
     except Exception:
         return url
-
-
-def entry_timestamp(entry: Any) -> Optional[discord.utils.utcnow]:
-    # discord.Embed(timestamp=...) attend un datetime aware; discord.utils.utcnow() donne now.
-    # On convertit published_parsed (struct_time) si dispo.
-    import datetime
-    try:
-        t = getattr(entry, "published_parsed", None) or getattr(entry, "updated_parsed", None)
-        if t:
-            dt = datetime.datetime(*t[:6], tzinfo=datetime.timezone.utc)
-            return dt
-    except Exception:
-        return None
-    return None
 
 
 # =========================
@@ -270,21 +354,48 @@ async def _resolve_discord_channel(channel_id: int) -> Optional[discord.abc.Mess
         return None
 
 
-async def publish_discord(title: str, summary: str, url: str, tags_str: str, importance_emoji: str, ts=None) -> bool:
+async def publish_discord(
+    title: str,
+    summary: str,
+    url: str,
+    tags_str: str,
+    importance_emoji: str,
+    author: str,
+    category: str,
+    pub_dt: Optional[datetime],
+) -> bool:
     try:
-        truncated_summary = truncate_text(summary, DISCORD_SUMMARY_LIMIT)
+        discord_url = add_utm(url, source="discord", medium="social", campaign="rss")
+
+        desc = prettify_summary(summary, DISCORD_SUMMARY_MAX, prefix="› ")
 
         embed = discord.Embed(
             title=truncate_text(title, 256),
-            url=url,
-            description=truncated_summary,
-            color=0x000000,
-            timestamp=ts,
+            url=discord_url,
+            description=desc,
+            color=0x0B0F14,
         )
-        embed.set_footer(text="Bergfrid")
+
+        meta_bits = []
+        if author:
+            meta_bits.append(author)
+        if category:
+            meta_bits.append(category)
+        if pub_dt:
+            meta_bits.append(format_date(pub_dt))
+        meta_line = " • ".join(meta_bits).strip()
+
+        if meta_line:
+            embed.add_field(name="Meta", value=truncate_text(meta_line, 1024), inline=False)
+
+        embed.add_field(name="Lire", value=f"[Ouvrir sur Bergfrid]({discord_url})", inline=False)
 
         if tags_str:
             embed.add_field(name="Tags", value=truncate_text(tags_str, 1024), inline=False)
+
+        embed.set_footer(text="Bergfrid")
+        if pub_dt:
+            embed.timestamp = pub_dt
 
         message_content = f"{importance_emoji} **Bergfrid** {tags_str}".strip()
 
@@ -292,14 +403,12 @@ async def publish_discord(title: str, summary: str, url: str, tags_str: str, imp
         channels_map = load_discord_channels()
         target_channel_ids.extend(list(channels_map.values()))
 
-        ok_any = False
         for channel_id in sorted(set(target_channel_ids)):
             channel = await _resolve_discord_channel(channel_id)
             if not channel:
                 continue
             try:
                 await channel.send(content=message_content, embed=embed)
-                ok_any = True
             except discord.Forbidden:
                 log.warning("Discord forbidden channel=%s", channel_id)
             except discord.HTTPException as e:
@@ -307,7 +416,7 @@ async def publish_discord(title: str, summary: str, url: str, tags_str: str, imp
 
             await asyncio.sleep(DISCORD_SEND_DELAY_SECONDS)
 
-        return ok_any
+        return True
     except Exception as e:
         log.warning("publish_discord exception: %s", e)
         return False
@@ -320,7 +429,7 @@ async def publish_discord(title: str, summary: str, url: str, tags_str: str, imp
 async def ensure_http_session() -> Optional["aiohttp.ClientSession"]:
     global _http_session
     if aiohttp is None:
-        log.error("aiohttp non installé: Telegram async indisponible.")
+        log.error("aiohttp non installé: Telegram indisponible.")
         return None
     if _http_session is None or _http_session.closed:
         timeout = aiohttp.ClientTimeout(total=20)
@@ -328,50 +437,74 @@ async def ensure_http_session() -> Optional["aiohttp.ClientSession"]:
     return _http_session
 
 
-def _telegram_format(title: str, summary: str, url: str, tags_str: str, emoji: str) -> str:
-    # Format "média": court, lisible, cliquable.
-    summary_short = truncate_text(summary, TELEGRAM_SUMMARY_LIMIT)
-    parts = [
-        f"{emoji} <b>{html.escape(title)}</b>",
-        "",
-        html.escape(summary_short),
-        "",
-        f"👉 <a href='{html.escape(url)}'>Lire l'article</a>",
-    ]
-    if tags_str:
-        parts += ["", f"<i>{html.escape(tags_str)}</i>"]
-    return "\n".join(parts).strip()
-
-
-async def publish_telegram(title: str, summary: str, url: str, tags_str: str, importance_emoji: str) -> bool:
+async def publish_telegram(
+    title: str,
+    summary: str,
+    url: str,
+    tags_str: str,
+    importance_emoji: str,
+    author: str,
+    category: str,
+    pub_dt: Optional[datetime],
+) -> bool:
     sess = await ensure_http_session()
     if sess is None:
         return False
 
-    telegram_text = _telegram_format(title, summary, url, tags_str, importance_emoji)
-
-    payload = {
-        "chat_id": TELEGRAM_CHAT_ID,
-        "text": telegram_text,
-        "parse_mode": "HTML",
-        "disable_web_page_preview": False,
-    }
-
-    endpoint = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     try:
+        telegram_url = add_utm(url, source="telegram", medium="social", campaign="rss")
+
+        pretty = prettify_summary(summary, TELEGRAM_SUMMARY_MAX, prefix="› ")
+
+        meta_bits = []
+        if author:
+            meta_bits.append(author)
+        if category:
+            meta_bits.append(category)
+        if pub_dt:
+            meta_bits.append(format_date(pub_dt))
+        meta_line = " • ".join(meta_bits).strip()
+
+        # Message propre et compact
+        parts = []
+        parts.append(f"{importance_emoji} <b>{html.escape(title)}</b>")
+        if meta_line:
+            parts.append(f"<i>{html.escape(meta_line)}</i>")
+        parts.append("")
+        parts.append(html.escape(pretty))
+        parts.append("")
+        parts.append(f"👉 <a href='{html.escape(telegram_url)}'>Lire l'article</a>")
+
+        if tags_str:
+            parts.append("")
+            parts.append(f"<i>{html.escape(tags_str)}</i>")
+
+        parts.append(f"<i>Source: Bergfrid</i>")
+
+        telegram_text = "\n".join(parts).strip()
+
+        payload = {
+            "chat_id": TELEGRAM_CHAT_ID,
+            "text": telegram_text,
+            "parse_mode": "HTML",
+            "disable_web_page_preview": False,
+        }
+
+        endpoint = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
         async with sess.post(endpoint, data=payload) as resp:
             if resp.status != 200:
                 body = await resp.text()
                 log.warning("Telegram error status=%s body=%s", resp.status, body[:1000])
                 return False
-            return True
+
+        return True
     except Exception as e:
-        log.warning("Telegram exception: %s", e)
+        log.warning("publish_telegram exception: %s", e)
         return False
 
 
 # =========================
-# RSS WATCHER
+# RSS FETCH WITH CACHE
 # =========================
 
 def parse_rss_with_cache(state: Dict[str, Any]) -> Any:
@@ -388,21 +521,9 @@ def parse_rss_with_cache(state: Dict[str, Any]) -> Any:
     return feed
 
 
-def _already_sent(state: Dict[str, Any], platform: str, eid: str) -> bool:
-    try:
-        return eid in state.get("sent", {}).get(platform, [])
-    except Exception:
-        return False
-
-
-def _mark_sent(state: Dict[str, Any], platform: str, eid: str) -> None:
-    state.setdefault("sent", {}).setdefault(platform, [])
-    lst = state["sent"][platform]
-    if eid not in lst:
-        lst.append(eid)
-        if len(lst) > SENT_RING_SIZE:
-            state["sent"][platform] = lst[-SENT_RING_SIZE:]
-
+# =========================
+# WATCHER
+# =========================
 
 @tasks.loop(minutes=RSS_POLL_MINUTES)
 async def bergfrid_watcher() -> None:
@@ -411,13 +532,13 @@ async def bergfrid_watcher() -> None:
 
     try:
         feed = parse_rss_with_cache(state)
-        save_state(state)  # cache etag/modified
+        save_state(state)  # persiste etag/modified
 
         entries = getattr(feed, "entries", None) or []
         if not entries:
             return
 
-        # Cold start: sync sur le head sans publier
+        # Cold start: sync sans publier
         if not last_seen:
             newest = entry_stable_id(entries[0])
             state["last_id"] = newest
@@ -425,7 +546,6 @@ async def bergfrid_watcher() -> None:
             log.warning("Cold start: sync on last_id=%s", newest)
             return
 
-        # Backlog jusqu'à last_seen
         backlog: List[Any] = []
         for e in entries:
             eid = entry_stable_id(e)
@@ -437,60 +557,79 @@ async def bergfrid_watcher() -> None:
             return
 
         if len(backlog) > MAX_BACKLOG_POSTS_PER_TICK:
-            log.warning("Backlog=%s > max=%s (troncature).", len(backlog), MAX_BACKLOG_POSTS_PER_TICK)
+            log.warning("Backlog=%s > max=%s. Troncature.", len(backlog), MAX_BACKLOG_POSTS_PER_TICK)
             backlog = backlog[:MAX_BACKLOG_POSTS_PER_TICK]
 
-        # Publier du plus ancien au plus récent, et avancer last_id item par item uniquement si OK
+        # Publier du plus ancien au plus récent.
+        # IMPORTANT: on n'avance last_id que si Discord ET Telegram sont OK
+        # et on évite les doublons par plateforme via state.sent
         for e in reversed(backlog):
             eid = entry_stable_id(e)
+
             title = str(getattr(e, "title", "Sans titre"))
             raw_link = str(getattr(e, "link", "") or "")
-            base_url = urljoin(BASE_DOMAIN, raw_link)
-
-            # UTM par plateforme
-            url_discord = add_utm(base_url, "discord")
-            url_telegram = add_utm(base_url, "telegram")
+            url = urljoin(BASE_DOMAIN, raw_link)
 
             raw_html = extract_html(e)
             summary = strip_html_to_text(raw_html)
-            tags_str = extract_tags(e)
-            emoji = determine_importance_emoji(summary)
-            ts = entry_timestamp(e)
 
-            log.info("Tentative publication id=%s title=%s", eid, title)
+            tags_str = extract_tags(e)
+            author = extract_author(e)
+            category = extract_category(e)
+            pub_dt = extract_pub_dt(e)
+
+            importance_emoji = determine_importance_emoji(summary)
 
             # Discord
             discord_ok = True
-            if not _already_sent(state, "discord", eid):
-                discord_ok = await publish_discord(title, summary, url_discord, tags_str, emoji, ts=ts)
+            if not sent_has(state, "discord", eid):
+                log.info("Discord publish: %s", title)
+                discord_ok = await publish_discord(
+                    title=title,
+                    summary=summary,
+                    url=url,
+                    tags_str=tags_str,
+                    importance_emoji=importance_emoji,
+                    author=author,
+                    category=category,
+                    pub_dt=pub_dt,
+                )
                 if discord_ok:
-                    _mark_sent(state, "discord", eid)
+                    sent_add(state, "discord", eid)
                     save_state(state)
 
             # Telegram
             telegram_ok = True
-            if not _already_sent(state, "telegram", eid):
-                telegram_ok = await publish_telegram(title, summary, url_telegram, tags_str, emoji)
+            if not sent_has(state, "telegram", eid):
+                log.info("Telegram publish: %s", title)
+                telegram_ok = await publish_telegram(
+                    title=title,
+                    summary=summary,
+                    url=url,
+                    tags_str=tags_str,
+                    importance_emoji=importance_emoji,
+                    author=author,
+                    category=category,
+                    pub_dt=pub_dt,
+                )
                 if telegram_ok:
-                    _mark_sent(state, "telegram", eid)
+                    sent_add(state, "telegram", eid)
                     save_state(state)
 
-            # Avancer le curseur uniquement quand les 2 sont OK (ou déjà envoyés)
+            # Commit seulement si les deux sont OK
             if discord_ok and telegram_ok:
                 state["last_id"] = eid
                 save_state(state)
             else:
-                # Stop: on retry au tick suivant, sans sauter l'item.
-                log.warning("Publication partielle id=%s discord_ok=%s telegram_ok=%s -> retry next tick",
-                            eid, discord_ok, telegram_ok)
-                break
+                log.warning("Publication partielle pour id=%s. Stop pour retry au prochain tick.", eid)
+                return
 
     except Exception as e:
-        log.warning("Erreur RSS watcher: %s", e)
+        log.warning("Erreur watcher: %s", e)
 
 
 # =========================
-# EVENTS & COMMANDES DISCORD
+# DISCORD COMMANDS
 # =========================
 
 @bot.event
@@ -509,8 +648,7 @@ async def on_ready() -> None:
 async def set_news_channel(ctx: commands.Context, channel: discord.TextChannel = None) -> None:
     channel = ctx.channel if channel is None else channel
     channels_map = load_discord_channels()
-    guild_id_str = str(ctx.guild.id)
-    channels_map[guild_id_str] = int(channel.id)
+    channels_map[str(ctx.guild.id)] = int(channel.id)
     save_discord_channels(channels_map)
     await ctx.send(f"✅ Ce serveur publiera les nouvelles dans {channel.mention}.")
 
@@ -519,19 +657,21 @@ async def set_news_channel(ctx: commands.Context, channel: discord.TextChannel =
 @commands.has_permissions(manage_channels=True)
 async def unset_news_channel(ctx: commands.Context) -> None:
     channels_map = load_discord_channels()
-    guild_id_str = str(ctx.guild.id)
-    if guild_id_str in channels_map:
-        del channels_map[guild_id_str]
+    gid = str(ctx.guild.id)
+    if gid in channels_map:
+        del channels_map[gid]
         save_discord_channels(channels_map)
         await ctx.send("❌ Canal de nouvelles retiré pour ce serveur.")
     else:
-        await ctx.send("ℹ️ Aucun canal de nouvelles n'était configuré pour ce serveur.")
+        await ctx.send("ℹ️ Aucun canal n'était configuré.")
 
 
 @bot.command(name="rsssync")
 @commands.has_permissions(manage_channels=True)
 async def rss_sync(ctx: commands.Context) -> None:
-    """Force une synchronisation sur le dernier item RSS sans publier."""
+    """
+    Force une sync sur le dernier item RSS sans publier.
+    """
     state = load_state()
     feed = feedparser.parse(BERGFRID_RSS_URL)
     entries = getattr(feed, "entries", None) or []
@@ -539,8 +679,6 @@ async def rss_sync(ctx: commands.Context) -> None:
         await ctx.send("⚠️ Flux RSS vide ou inaccessible.")
         return
     state["last_id"] = entry_stable_id(entries[0])
-    # on vide les sent ring pour repartir net
-    state["sent"] = {"discord": [], "telegram": []}
     save_state(state)
     await ctx.send(f"✅ Synchronisé sur last_id={state['last_id']} (aucune publication).")
 
@@ -561,9 +699,7 @@ if __name__ == "__main__":
     finally:
         try:
             loop = asyncio.get_event_loop()
-            if loop.is_running():
-                pass
-            else:
+            if not loop.is_running():
                 loop.run_until_complete(_graceful_shutdown())
         except Exception:
             pass
