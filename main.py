@@ -1,252 +1,492 @@
+import os
+import re
+import json
+import html
+import asyncio
+import logging
+from typing import Any, Dict, Optional, List
+from urllib.parse import urljoin
+
 import discord
 from discord.ext import commands, tasks
-import requests
-import os
-import asyncio
+
 import feedparser
-import json
-import re
 
-# === CONFIGURATION ESSENTIELLE ===
-# Les tokens et IDs DOIVENT être définis dans votre environnement.
-DISCORD_TOKEN = os.environ['DISCORD_TOKEN']
-TELEGRAM_TOKEN = os.environ['TELEGRAM_TOKEN']
-TELEGRAM_CHAT_ID = os.environ['TELEGRAM_CHAT_ID']
-
-# --- CONFIGURATION DISCORD ---
 try:
-    # ID du canal officiel (doit être un entier)
-    DISCORD_OFFICIAL_CHANNEL_ID = int(os.environ['DISCORD_NEWS_CHANNEL_ID']) 
-except KeyError:
-    DISCORD_OFFICIAL_CHANNEL_ID = 1330916602425770088 
+    import aiohttp
+except ImportError:
+    aiohttp = None  # Telegram async nécessite aiohttp
 
-# --- CONFIGURATION RSS et FICHIERS ---
+
+# =========================
+# CONFIGURATION ESSENTIELLE
+# =========================
+
+DISCORD_TOKEN = os.environ["DISCORD_TOKEN"]
+TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]
+TELEGRAM_CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
+
+# --- CONFIG DISCORD ---
+DISCORD_OFFICIAL_CHANNEL_ID = int(os.getenv("DISCORD_NEWS_CHANNEL_ID", "1330916602425770088"))
+
+# --- CONFIG RSS / FICHIERS ---
 BERGFRID_RSS_URL = "https://bergfrid.com/rss.xml"
-BERGFRID_MEMORY_FILE = "last_article_link.txt"
-DISCORD_CHANNELS_FILE = "discord_channels.json" # Pour les serveurs secondaires
+STATE_FILE = "bergfrid_state.json"
+DISCORD_CHANNELS_FILE = "discord_channels.json"
 
-# --- DISCORD SETUP ---
+BASE_DOMAIN = "https://bergfrid.com"
+
+# --- Fréquences / limites ---
+RSS_POLL_MINUTES = float(os.getenv("RSS_POLL_MINUTES", "2.0"))
+DISCORD_SEND_DELAY_SECONDS = float(os.getenv("DISCORD_SEND_DELAY_SECONDS", "0.2"))  # anti rate-limit
+MAX_BACKLOG_POSTS_PER_TICK = int(os.getenv("MAX_BACKLOG_POSTS_PER_TICK", "20"))      # garde-fou
+
+# =========================
+# LOGGING
+# =========================
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(message)s",
+)
+log = logging.getLogger("bergfrid-bot")
+
+
+# =========================
+# DISCORD SETUP
+# =========================
+
 intents = discord.Intents.default()
-intents.message_content = True 
-intents.guilds = True 
-bot = commands.Bot(command_prefix='!', intents=intents)
+intents.message_content = True
+intents.guilds = True
 
-# --- HELPERS : Mémoire et Persistance ---
+bot = commands.Bot(command_prefix="!", intents=intents)
 
-def read_memory(file_path):
-    """Lit la dernière valeur depuis le fichier mémoire."""
-    if not os.path.exists(file_path): return None
+# Session HTTP partagée (Telegram)
+_http_session: Optional["aiohttp.ClientSession"] = None
+
+
+# =========================
+# PERSISTENCE (STATE)
+# =========================
+
+def _atomic_write_json(file_path: str, data: Dict[str, Any]) -> None:
+    tmp_path = f"{file_path}.tmp"
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+    os.replace(tmp_path, file_path)
+
+
+def load_state() -> Dict[str, Any]:
+    """
+    State schema:
+    {
+      "last_id": "....",        # GUID ou lien stable
+      "etag": "...",            # HTTP cache info pour feedparser (si dispo)
+      "modified": [..]          # feedparser modified (si dispo)
+    }
+    """
+    if not os.path.exists(STATE_FILE):
+        return {"last_id": None, "etag": None, "modified": None}
+
     try:
-        with open(file_path, "r", encoding="utf-8") as f:
-            # On nettoie les espaces/sauts de ligne et s'assure qu'il y a du contenu
-            content = f.read().strip()
-            return content if content else None
+        with open(STATE_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, dict):
+            return {"last_id": None, "etag": None, "modified": None}
+        data.setdefault("last_id", None)
+        data.setdefault("etag", None)
+        data.setdefault("modified", None)
+        return data
     except Exception as e:
-        print(f"❌ Erreur lecture mémoire: {e}")
-        return None
+        log.error("Erreur lecture state: %s", e)
+        return {"last_id": None, "etag": None, "modified": None}
 
-def write_memory(file_path, value):
-    """Écrit la valeur dans le fichier mémoire."""
-    with open(file_path, "w", encoding="utf-8") as f: f.write(str(value))
 
-def load_discord_channels():
-    """Charge les IDs de canaux enregistrés (Serveur ID -> Canal ID)."""
-    if not os.path.exists(DISCORD_CHANNELS_FILE): return {}
-    with open(DISCORD_CHANNELS_FILE, "r", encoding="utf-8") as f:
-        try:
-            return json.load(f)
-        except json.JSONDecodeError:
+def save_state(state: Dict[str, Any]) -> None:
+    try:
+        _atomic_write_json(STATE_FILE, state)
+    except Exception as e:
+        log.error("Erreur écriture state: %s", e)
+
+
+# =========================
+# DISCORD CHANNELS (MULTI-SERVEURS)
+# =========================
+
+def load_discord_channels() -> Dict[str, int]:
+    if not os.path.exists(DISCORD_CHANNELS_FILE):
+        return {}
+    try:
+        with open(DISCORD_CHANNELS_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, dict):
             return {}
+        # Normalise vers int
+        out: Dict[str, int] = {}
+        for k, v in data.items():
+            try:
+                out[str(k)] = int(v)
+            except Exception:
+                continue
+        return out
+    except Exception:
+        return {}
 
-def save_discord_channels(channels_dict):
-    """Sauvegarde les IDs de canaux enregistrés."""
-    with open(DISCORD_CHANNELS_FILE, "w", encoding="utf-8") as f:
-        json.dump(channels_dict, f, indent=4)
 
-# --- LOGIQUE DE CONTENU ---
+def save_discord_channels(channels_dict: Dict[str, int]) -> None:
+    try:
+        _atomic_write_json(DISCORD_CHANNELS_FILE, channels_dict)
+    except Exception as e:
+        log.error("Erreur écriture discord_channels: %s", e)
 
-def determine_importance_and_emoji(summary):
-    """Détermine l'importance du contenu pour choisir un émoji."""
-    if "critique" in summary.lower() or "urgent" in summary.lower():
-        return "🔥", "Haute"
-    return "📰", "Normale"
 
-def truncate_text(text, limit):
-    """Tronque le texte pour respecter la limite."""
-    # Limite Discord pour description d'embed : 4096 (on utilise 2000 par sécurité)
+# =========================
+# CONTENU
+# =========================
+
+def determine_importance_and_emoji(text: str) -> str:
+    t = (text or "").lower()
+    if any(k in t for k in ["critique", "urgent", "alerte", "attaque", "explosion", "guerre"]):
+        return "🔥"
+    return "📰"
+
+
+def truncate_text(text: str, limit: int) -> str:
+    if text is None:
+        return ""
     if len(text) > limit:
-        return text[:limit-3] + "..."
+        return text[: max(0, limit - 3)] + "..."
     return text
 
-# --- FONCTIONS DE PUBLICATION ---
 
-async def publish_discord(title, summary, url, tags_str, importance_emoji):
-    """Envoie l'article aux canaux Discord."""
-    truncated_summary = truncate_text(summary, 2000) 
-    
+def entry_stable_id(entry: Any) -> str:
+    """
+    Priorité:
+    - entry.id (souvent GUID)
+    - entry.guid
+    - entry.link
+    """
+    for attr in ("id", "guid", "link"):
+        v = getattr(entry, attr, None)
+        if v:
+            return str(v)
+    # fallback
+    return str(getattr(entry, "title", "unknown"))
+
+
+def extract_html(entry: Any) -> str:
+    # content:encoded souvent exposé via entry.content[0].value
+    content = getattr(entry, "content", None)
+    if content and isinstance(content, list) and len(content) > 0:
+        v = getattr(content[0], "value", None)
+        if v:
+            return str(v)
+
+    # fallback
+    return str(getattr(entry, "description", "") or getattr(entry, "summary", "") or "")
+
+
+def strip_html_to_text(raw_html: str) -> str:
+    raw_html = raw_html or ""
+
+    # Si BeautifulSoup dispo, c'est le mieux
+    try:
+        from bs4 import BeautifulSoup  # type: ignore
+        text = BeautifulSoup(raw_html, "html.parser").get_text("\n")
+        text = html.unescape(text)
+        # compact: évite 15 lignes vides
+        text = re.sub(r"\n{3,}", "\n\n", text).strip()
+        return text
+    except Exception:
+        # fallback simple sans dépendance
+        txt = re.sub(r"<br\s*/?>", "\n", raw_html, flags=re.I)
+        txt = re.sub(r"</p\s*>", "\n\n", txt, flags=re.I)
+        txt = re.sub(r"<[^>]+>", "", txt)
+        txt = html.unescape(txt)
+        txt = re.sub(r"\n{3,}", "\n\n", txt).strip()
+        return txt
+
+
+def extract_tags(entry: Any) -> str:
+    tags = []
+    entry_tags = getattr(entry, "tags", None)
+    if entry_tags:
+        for t in entry_tags:
+            term = getattr(t, "term", None)
+            if term:
+                # petit nettoyage pour hashtags
+                term_clean = re.sub(r"\s+", "", str(term))
+                tags.append(f"#{term_clean}")
+    return " ".join(tags)
+
+
+# =========================
+# PUBLICATION DISCORD
+# =========================
+
+async def _resolve_discord_channel(channel_id: int) -> Optional[discord.abc.Messageable]:
+    ch = bot.get_channel(channel_id)
+    if ch is not None:
+        return ch
+    try:
+        return await bot.fetch_channel(channel_id)
+    except (discord.NotFound, discord.Forbidden):
+        return None
+    except discord.HTTPException as e:
+        log.warning("Discord fetch_channel HTTPException channel=%s: %s", channel_id, e)
+        return None
+
+
+async def publish_discord(title: str, summary: str, url: str, tags_str: str, importance_emoji: str) -> None:
+    truncated_summary = truncate_text(summary, 3500)  # Embed desc max 4096, marge
+
     embed = discord.Embed(
-        title=title,
+        title=truncate_text(title, 256),
         url=url,
         description=truncated_summary,
-        color=0x000000
+        color=0x000000,
     )
-    message_content = f"{importance_emoji} **NOUVEL ARTICLE** {tags_str}"
+    message_content = f"{importance_emoji} **NOUVEL ARTICLE** {tags_str}".strip()
 
-    target_channel_ids = [DISCORD_OFFICIAL_CHANNEL_ID]
-    
+    target_channel_ids: List[int] = [DISCORD_OFFICIAL_CHANNEL_ID]
     channels_map = load_discord_channels()
     target_channel_ids.extend(list(channels_map.values()))
 
-    for channel_id in set(target_channel_ids):
-        channel = bot.get_channel(channel_id)
-        if channel:
-            try:
-                await channel.send(content=message_content, embed=embed)
-            except Exception as e:
-                print(f"❌ Erreur Discord (Canal ID: {channel_id}): {e}")
+    for channel_id in sorted(set(target_channel_ids)):
+        channel = await _resolve_discord_channel(channel_id)
+        if not channel:
+            continue
+        try:
+            await channel.send(content=message_content, embed=embed)
+        except discord.Forbidden:
+            log.warning("Discord forbidden channel=%s", channel_id)
+        except discord.HTTPException as e:
+            log.warning("Discord HTTPException channel=%s: %s", channel_id, e)
 
-def publish_telegram(title, summary, url, tags_str, importance_emoji):
-    """Envoie l'article à Telegram (synchrone)."""
-    truncated_summary = truncate_text(summary, 3000) 
-    
+        await asyncio.sleep(DISCORD_SEND_DELAY_SECONDS)
+
+
+# =========================
+# PUBLICATION TELEGRAM (ASYNC)
+# =========================
+
+async def ensure_http_session() -> Optional["aiohttp.ClientSession"]:
+    global _http_session
+    if aiohttp is None:
+        log.error("aiohttp non installé: Telegram async indisponible.")
+        return None
+    if _http_session is None or _http_session.closed:
+        timeout = aiohttp.ClientTimeout(total=20)
+        _http_session = aiohttp.ClientSession(timeout=timeout)
+    return _http_session
+
+
+async def publish_telegram(title: str, summary: str, url: str, tags_str: str, importance_emoji: str) -> None:
+    sess = await ensure_http_session()
+    if sess is None:
+        return
+
+    truncated_summary = truncate_text(summary, 3500)
+
     telegram_text = (
-        f"{importance_emoji} <b>{title}</b>\n\n"
-        f"{truncated_summary}\n\n"
-        f"👉 <a href='{url}'>Lire l'article</a>\n\n"
-        f"<i>{tags_str}</i>"
-    )
-    
-    telegram_data = {
+        f"{importance_emoji} <b>{html.escape(title)}</b>\n\n"
+        f"{html.escape(truncated_summary)}\n\n"
+        f"👉 <a href='{html.escape(url)}'>Lire l'article</a>\n\n"
+        f"<i>{html.escape(tags_str)}</i>"
+    ).strip()
+
+    payload = {
         "chat_id": TELEGRAM_CHAT_ID,
         "text": telegram_text,
         "parse_mode": "HTML",
-        "disable_web_page_preview": False
+        "disable_web_page_preview": False,
     }
 
+    endpoint = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     try:
-        requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage", data=telegram_data)
+        async with sess.post(endpoint, data=payload) as resp:
+            if resp.status != 200:
+                body = await resp.text()
+                log.warning("Telegram error status=%s body=%s", resp.status, body[:1000])
     except Exception as e:
-        print(f"❌ Erreur Telegram: {e}")
+        log.warning("Telegram exception: %s", e)
 
-# --- TÂCHE DE SURVEILLANCE RSS PRINCIPALE (CORRIGÉE) ---
 
-@tasks.loop(minutes=2.0)
-async def bergfrid_watcher():
-    """Vérifie le flux RSS et publie les nouveaux articles."""
-    
-    last_link = read_memory(BERGFRID_MEMORY_FILE)
-    
-    # 1. Initialisation (Si aucune mémoire trouvée)
-    if last_link is None:
-        print("⚠️ Démarrage à froid : Synchronisation RSS...")
-        try:
-            feed = feedparser.parse(BERGFRID_RSS_URL)
-            if feed.entries:
-                # IMPORTANT : Stocker le lien brut au démarrage à froid
-                last_link = feed.entries[0].link 
-                write_memory(BERGFRID_MEMORY_FILE, last_link)
-                print(f"✅ Synchronisé sur : {last_link}")
-        except Exception as e:
-            print(f"❌ Erreur init RSS : {e}")
-        return # Attendre la prochaine itération pour la surveillance
+# =========================
+# RSS WATCHER
+# =========================
 
-    # 2. Boucle de surveillance
+def parse_rss_with_cache(state: Dict[str, Any]) -> Any:
+    etag = state.get("etag")
+    modified = state.get("modified")
+
+    # feedparser accepte etag/modified si fournis
+    feed = feedparser.parse(BERGFRID_RSS_URL, etag=etag, modified=modified)
+
+    # Mise à jour cache si dispo
+    if getattr(feed, "etag", None):
+        state["etag"] = feed.etag
+    if getattr(feed, "modified", None):
+        state["modified"] = feed.modified
+
+    return feed
+
+
+@tasks.loop(minutes=RSS_POLL_MINUTES)
+async def bergfrid_watcher() -> None:
+    state = load_state()
+    last_seen = state.get("last_id")
+
     try:
-        feed = feedparser.parse(BERGFRID_RSS_URL)
-        
-        if feed.entries:
-            latest_entry = feed.entries[0]
-            current_link = latest_entry.link
-            
-            # --- CORRECTION DU LIEN ---
-            base_domain = "https://bergfrid.com"
-            if "localhost" in current_link or "127.0.0.1" in current_link or current_link.startswith('/'):
-                if current_link.startswith('/'):
-                    path = current_link
-                else:
-                    try:
-                        path_parts = current_link.split('://', 1)[-1].split('/', 1)
-                        path = '/' + path_parts[-1] if len(path_parts) > 1 else ''
-                    except Exception:
-                        path = ""
-                corrected_link = base_domain + path
-            else:
-                corrected_link = current_link
+        feed = parse_rss_with_cache(state)
+        save_state(state)  # cache etag/modified
 
-            url = corrected_link 
-            # ---------------------------
+        # 304 Not Modified: feed.bozo peut être False et entries vide, selon serveurs
+        entries = getattr(feed, "entries", None) or []
+        if not entries:
+            return
 
-            # SI NOUVEAU LIEN DÉTECTÉ OU SI LE LIEN CORRIGÉ EST DIFFÉRENT DE LA MÉMOIRE BRUTE
-            # Ceci devrait empêcher la boucle infinie si le lien en mémoire est encore l'ancien brute.
-            if url != last_link: 
-                
-                # --- ÉVITER LE BUG DE BOUCLE INFINIE ---
-                # Si le dernier lien enregistré n'est PAS un lien corrigé,
-                # mais que le lien corrigé actuel correspond, ne pas publier
-                # et mettre à jour la mémoire avec le lien corrigé.
-                if current_link == last_link and url != last_link:
-                    print("ℹ️ Réparation de la mémoire : Mise à jour du lien brut en corrigé.")
-                    write_memory(BERGFRID_MEMORY_FILE, url) 
-                    return
-                # ----------------------------------------
-                
-                # Extraction & Préparation des données
-                title = latest_entry.title
-                summary = latest_entry.description
-                summary = re.sub(r'<[^>]+>', '', summary)
-                tags = [f"#{t.term}" for t in latest_entry.tags] if 'tags' in latest_entry else []
-                tags_str = " ".join(tags)
-                importance_emoji, _ = determine_importance_and_emoji(summary)
+        # Cold start: on se synchronise sans publier
+        if not last_seen:
+            newest = entry_stable_id(entries[0])
+            state["last_id"] = newest
+            save_state(state)
+            log.warning("Cold start: sync on last_id=%s", newest)
+            return
 
-                print(f"📣 Nouvelle publication : {title} ({importance_emoji})")
+        # Collecte de la backlog jusqu'à last_seen
+        backlog: List[Any] = []
+        for e in entries:
+            eid = entry_stable_id(e)
+            if eid == last_seen:
+                break
+            backlog.append(e)
 
-                # --- ENVOI PAR PLATEFORME ---
-                await publish_discord(title, summary, url, tags_str, importance_emoji)
-                
-                # Exécution synchrone dans un thread
-                bot.loop.run_in_executor(None, publish_telegram, title, summary, url, tags_str, importance_emoji)
-                
-                # CORRECTION : On sauvegarde le lien CORRIGÉ (url)
-                write_memory(BERGFRID_MEMORY_FILE, url) 
-                last_link = url 
+        if not backlog:
+            return
+
+        # Garde-fou si le bot est resté offline longtemps
+        if len(backlog) > MAX_BACKLOG_POSTS_PER_TICK:
+            log.warning(
+                "Backlog=%s > max=%s. Troncature aux plus récents.",
+                len(backlog),
+                MAX_BACKLOG_POSTS_PER_TICK,
+            )
+            backlog = backlog[:MAX_BACKLOG_POSTS_PER_TICK]
+
+        # Publier du plus ancien au plus récent
+        for e in reversed(backlog):
+            title = str(getattr(e, "title", "Sans titre"))
+            raw_link = str(getattr(e, "link", "") or "")
+            url = urljoin(BASE_DOMAIN, raw_link)
+
+            raw_html = extract_html(e)
+            summary = strip_html_to_text(raw_html)
+
+            tags_str = extract_tags(e)
+            importance_emoji = determine_importance_and_emoji(summary)
+
+            log.info("Publication: %s", title)
+
+            await publish_discord(title, summary, url, tags_str, importance_emoji)
+            await publish_telegram(title, summary, url, tags_str, importance_emoji)
+
+        # Update last_id sur l’item le plus récent du flux
+        state["last_id"] = entry_stable_id(entries[0])
+        save_state(state)
 
     except Exception as e:
-        print(f"⚠️ Erreur boucle RSS principale : {e}")
+        log.warning("Erreur RSS watcher: %s", e)
 
 
-# --- ÉVÉNEMENTS & COMMANDES DISCORD ---
+# =========================
+# EVENTS & COMMANDES DISCORD
+# =========================
 
 @bot.event
-async def on_ready():
-    print(f'✅ Connecté : {bot.user}')
+async def on_ready() -> None:
+    log.info("Connecté: %s", bot.user)
     if not bergfrid_watcher.is_running():
         bergfrid_watcher.start()
-        print("🚀 Tâche de surveillance RSS démarrée (Mode Simple).")
+        log.info("Tâche RSS démarrée: %s min", RSS_POLL_MINUTES)
+
+    # Init session HTTP Telegram
+    if aiohttp is not None:
+        await ensure_http_session()
+
+
+@bot.event
+async def on_close() -> None:
+    # Rarement appelé selon l’implémentation, mais on tente
+    global _http_session
+    if _http_session and not _http_session.closed:
+        await _http_session.close()
+
 
 @bot.command(name="setnews")
 @commands.has_permissions(manage_channels=True)
-async def set_news_channel(ctx, channel: discord.TextChannel = None):
-    """Définit le canal de news pour ce serveur. Usage : !setnews [\#canal]"""
+async def set_news_channel(ctx: commands.Context, channel: discord.TextChannel = None) -> None:
     channel = ctx.channel if channel is None else channel
     channels_map = load_discord_channels()
     guild_id_str = str(ctx.guild.id)
-    channels_map[guild_id_str] = channel.id
+    channels_map[guild_id_str] = int(channel.id)
     save_discord_channels(channels_map)
-    await ctx.send(f"✅ Ce serveur publiera les nouvelles dans le canal {channel.mention}.")
+    await ctx.send(f"✅ Ce serveur publiera les nouvelles dans {channel.mention}.")
+
 
 @bot.command(name="unsetnews")
 @commands.has_permissions(manage_channels=True)
-async def unset_news_channel(ctx):
-    """Retire l'enregistrement du canal de news. Usage : !unsetnews"""
+async def unset_news_channel(ctx: commands.Context) -> None:
     channels_map = load_discord_channels()
     guild_id_str = str(ctx.guild.id)
     if guild_id_str in channels_map:
         del channels_map[guild_id_str]
         save_discord_channels(channels_map)
-        await ctx.send("❌ Le canal de nouvelles a été retiré pour ce serveur.")
+        await ctx.send("❌ Canal de nouvelles retiré pour ce serveur.")
     else:
         await ctx.send("ℹ️ Aucun canal de nouvelles n'était configuré pour ce serveur.")
 
-# --- Démarrage du bot ---
-if __name__ == '__main__':
-    bot.run(DISCORD_TOKEN)
+
+@bot.command(name="rsssync")
+@commands.has_permissions(manage_channels=True)
+async def rss_sync(ctx: commands.Context) -> None:
+    """
+    Force une synchronisation sur le dernier item RSS sans publier.
+    Utile si tu as un backlog énorme ou si tu veux repartir propre.
+    """
+    state = load_state()
+    feed = feedparser.parse(BERGFRID_RSS_URL)
+    entries = getattr(feed, "entries", None) or []
+    if not entries:
+        await ctx.send("⚠️ Flux RSS vide ou inaccessible.")
+        return
+    state["last_id"] = entry_stable_id(entries[0])
+    save_state(state)
+    await ctx.send(f"✅ Synchronisé sur last_id={state['last_id']} (aucune publication).")
+
+
+# =========================
+# BOOT
+# =========================
+
+async def _graceful_shutdown():
+    global _http_session
+    if _http_session and not _http_session.closed:
+        await _http_session.close()
+
+
+if __name__ == "__main__":
+    try:
+        bot.run(DISCORD_TOKEN)
+    finally:
+        # Dans certains cas, on peut avoir une loop déjà fermée, donc on protège.
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                # pas idéal, mais on évite un crash
+                pass
+            else:
+                loop.run_until_complete(_graceful_shutdown())
+        except Exception:
+            pass
