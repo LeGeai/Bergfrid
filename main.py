@@ -1,18 +1,13 @@
 import os
 import asyncio
 import logging
+import json
 
 import discord
 from discord.ext import commands, tasks
 
 from core.state import StateStore
 from core.rss import parse_rss_with_cache, feed_to_backlog, entry_to_article
-from core.utils import determine_importance_emoji
-
-from publishers.discord_pub import DiscordPublisher
-from publishers.telegram_pub import TelegramPublisher
-
-import json
 
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -43,6 +38,9 @@ TELEGRAM_SUMMARY_MAX = int(os.getenv("TELEGRAM_SUMMARY_MAX", "900"))
 # Rate
 DISCORD_SEND_DELAY_SECONDS = float(os.getenv("DISCORD_SEND_DELAY_SECONDS", "0.2"))
 
+# Delay between articles (anti-spam)
+ARTICLE_PUBLISH_DELAY_SECONDS = float(os.getenv("ARTICLE_PUBLISH_DELAY_SECONDS", "30"))
+
 # Sent ring
 SENT_RING_MAX = int(os.getenv("SENT_RING_MAX", "250"))
 
@@ -50,7 +48,13 @@ SENT_RING_MAX = int(os.getenv("SENT_RING_MAX", "250"))
 def load_targets():
     try:
         with open(TARGETS_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
+            data = json.load(f)
+        if not isinstance(data, dict):
+            raise ValueError("publish_targets must be dict")
+        data.setdefault("enabled", ["discord", "telegram"])
+        data.setdefault("discord", {})
+        data.setdefault("telegram", {})
+        return data
     except Exception:
         return {"enabled": ["discord", "telegram"], "discord": {}, "telegram": {}}
 
@@ -62,6 +66,10 @@ intents.guilds = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 state_store = StateStore(STATE_FILE, sent_ring_max=SENT_RING_MAX)
+
+# Publishers (imports here to avoid circular import surprises)
+from publishers.discord_pub import DiscordPublisher
+from publishers.telegram_pub import TelegramPublisher
 
 discord_pub = DiscordPublisher(
     bot=bot,
@@ -76,10 +84,7 @@ telegram_pub = TelegramPublisher(
     summary_max=TELEGRAM_SUMMARY_MAX,
 )
 
-publishers = {
-  "discord": discord_pub,
-  "telegram": telegram_pub,
-}
+publishers = {"discord": discord_pub, "telegram": telegram_pub}
 
 
 @tasks.loop(minutes=RSS_POLL_MINUTES)
@@ -90,19 +95,21 @@ async def bergfrid_watcher():
     state = state_store.load()
     last_seen = state.get("last_id")
 
+    # Fetch RSS with cache
     feed = parse_rss_with_cache(BERGFRID_RSS_URL, BASE_DOMAIN, state)
-    state_store.save(state)  # cache etag/modified
+    state_store.save(state)  # persist etag/modified even if no publish
 
     entries = getattr(feed, "entries", None) or []
     if not entries:
         return
 
-    # Cold start: sync sans publier
+    # Cold start: sync sans publier (ne publie pas tout l’historique)
     if not last_seen:
-        newest = getattr(entries[0], "id", None) or getattr(entries[0], "guid", None) or getattr(entries[0], "link", None)
-        state["last_id"] = str(newest) if newest else None
+        newest_entry = entries[0]
+        article = entry_to_article(newest_entry, BASE_DOMAIN)
+        state["last_id"] = article.id
         state_store.save(state)
-        log.warning("Cold start: sync on last_id=%s", state["last_id"])
+        log.warning("Cold start: sync on last_id=%s (aucune publication)", state["last_id"])
         return
 
     backlog = feed_to_backlog(feed, last_seen)
@@ -118,12 +125,15 @@ async def bergfrid_watcher():
         article = entry_to_article(entry, BASE_DOMAIN)
         eid = article.id
 
+        published_any = False
+
         # Discord
         discord_ok = True
         if "discord" in enabled and not StateStore.sent_has(state, "discord", eid):
             log.info("Discord publish: %s", article.title)
             discord_ok = await discord_pub.publish(article, targets.get("discord", {}))
             if discord_ok:
+                published_any = True
                 state_store.sent_add(state, "discord", eid)
                 state_store.save(state)
 
@@ -133,6 +143,7 @@ async def bergfrid_watcher():
             log.info("Telegram publish: %s", article.title)
             telegram_ok = await telegram_pub.publish(article, targets.get("telegram", {}))
             if telegram_ok:
+                published_any = True
                 state_store.sent_add(state, "telegram", eid)
                 state_store.save(state)
 
@@ -150,6 +161,10 @@ async def bergfrid_watcher():
             log.warning("Publication partielle pour id=%s. Stop pour retry au prochain tick.", eid)
             return
 
+        # Anti-spam: délai minimum entre chaque article effectivement publié
+        if published_any:
+            await asyncio.sleep(ARTICLE_PUBLISH_DELAY_SECONDS)
+
 
 @bot.event
 async def on_ready():
@@ -164,7 +179,6 @@ async def on_ready():
 async def set_news_channel(ctx: commands.Context, channel: discord.TextChannel = None):
     channel = ctx.channel if channel is None else channel
 
-    # persistance identique à ton ancien bot
     try:
         if os.path.exists(DISCORD_CHANNELS_FILE):
             with open(DISCORD_CHANNELS_FILE, "r", encoding="utf-8") as f:
@@ -221,8 +235,9 @@ async def rss_sync(ctx: commands.Context):
         await ctx.send("⚠️ Flux RSS vide ou inaccessible.")
         return
 
-    newest = getattr(entries[0], "id", None) or getattr(entries[0], "guid", None) or getattr(entries[0], "link", None)
-    state["last_id"] = str(newest) if newest else None
+    newest_entry = entries[0]
+    article = entry_to_article(newest_entry, BASE_DOMAIN)
+    state["last_id"] = article.id
     state_store.save(state)
 
     await ctx.send(f"✅ Synchronisé sur last_id={state['last_id']} (aucune publication).")
