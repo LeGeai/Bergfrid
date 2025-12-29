@@ -56,12 +56,19 @@ ARTICLE_PUBLISH_DELAY_SECONDS = float(os.getenv("ARTICLE_PUBLISH_DELAY_SECONDS",
 # Mémoire anti-doublons
 SENT_RING_MAX = int(os.getenv("SENT_RING_MAX", "250"))
 
-# Promo 22h
+# Timezone / planning
 TZ = ZoneInfo(os.getenv("BOT_TIMEZONE", "Europe/Paris"))
+
+# Bonne nuit (22h par défaut)
 PROMO_HOUR = int(os.getenv("PROMO_HOUR", "22"))
 PROMO_MINUTE = int(os.getenv("PROMO_MINUTE", "0"))
-TIPEEE_URL = os.getenv("TIPEEE_URL", "https://tipeee.com/bergfrid")
+
+# Liens promo
 PROMO_WEBSITE_URL = os.getenv("PROMO_WEBSITE_URL", "https://www.bergfrid.com")
+TIPEEE_URL = os.getenv("TIPEEE_URL", "https://fr.tipeee.com/parlement-des-hiboux")
+
+# Anti-spam reboot/maj (même message)
+REBOOT_NOTICE_COOLDOWN_SECONDS = int(os.getenv("REBOOT_NOTICE_COOLDOWN_SECONDS", "600"))  # 10 min
 
 
 def load_targets():
@@ -97,7 +104,7 @@ def get_all_discord_target_channel_ids() -> list[int]:
             ids.append(int(v))
         except Exception:
             pass
-    # uniq stable-ish
+
     out = []
     seen = set()
     for cid in ids:
@@ -133,6 +140,7 @@ async def send_telegram_text(text: str, parse_mode: str = "HTML", disable_previe
     if aiohttp is None:
         log.error("aiohttp non installé: impossible d'envoyer Telegram (messages spéciaux).")
         return False
+
     endpoint = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     payload = {
         "chat_id": TELEGRAM_CHAT_ID,
@@ -140,6 +148,7 @@ async def send_telegram_text(text: str, parse_mode: str = "HTML", disable_previe
         "parse_mode": parse_mode,
         "disable_web_page_preview": disable_preview,
     }
+
     try:
         timeout = aiohttp.ClientTimeout(total=20)
         async with aiohttp.ClientSession(timeout=timeout) as sess:
@@ -154,22 +163,43 @@ async def send_telegram_text(text: str, parse_mode: str = "HTML", disable_previe
         return False
 
 
+# =========================
+# MESSAGES SPECIAUX
+# =========================
+
 def build_night_promo_discord() -> str:
     return (
-        "🌙 **Bonne nuit à tous.**\n"
-        "Merci de lire et de partager Bergfrid.\n\n"
-        f"🖋️ Le site: {PROMO_WEBSITE_URL}\n"
-        f"☕ Soutenir le média (Tipeee): {TIPEEE_URL}"
+        "🌙 **Belle nuit à chacun d’entre vous.**\n"
+        "Que Dieu vous garde. 🙏\n\n"
+        "Vous êtes ceux qui font notre média, vous êtes notre cœur.\n"
+        f"🖋️ Pensez à nous rendre visite sur le site : {PROMO_WEBSITE_URL}\n"
+        f"☕ Et si vous avez le cœur et l’opportunité, vous pouvez nous soutenir ici : {TIPEEE_URL}"
     )
 
 
 def build_night_promo_telegram() -> str:
-    # HTML Telegram
     return (
-        "🌙 <b>Bonne nuit à tous.</b>\n"
-        "Merci de lire et de partager Bergfrid.\n\n"
-        f"🖋️ <a href='{PROMO_WEBSITE_URL}'>Le site</a>\n"
-        f"☕ <a href='{TIPEEE_URL}'>Soutenir Bergfrid (Tipeee)</a>"
+        "🌙 <b>Belle nuit à chacun d’entre vous.</b>\n"
+        "Que Dieu vous garde. 🙏\n\n"
+        "Vous êtes ceux qui font notre média, vous êtes notre cœur.\n"
+        f"🖋️ <a href='{PROMO_WEBSITE_URL}'>Visiter le site</a>\n"
+        f"☕ <a href='{TIPEEE_URL}'>Faire un don et financer le média (Tipeee)</a>"
+    )
+
+
+def build_reboot_notice_discord() -> str:
+    return (
+        "🔄 **Mise à jour effectuée**\n"
+        "Le logiciel de diffusion des actualités vient d’être mis à jour pour votre confort.\n"
+        f"N’hésitez pas à visiter notre site : {PROMO_WEBSITE_URL}"
+    )
+
+
+def build_reboot_notice_telegram() -> str:
+    return (
+        "🔄 <b>Mise à jour effectuée</b>\n"
+        "Le logiciel de diffusion des actualités vient d’être mis à jour pour votre confort.\n"
+        f"N’hésitez pas à visiter <a href='{PROMO_WEBSITE_URL}'>le site</a>."
     )
 
 
@@ -187,6 +217,41 @@ def build_recovery_notice_telegram() -> str:
         "nous reprenons depuis le dernier article.\n"
         f"Si vous pensez avoir loupé des publications, consultez <a href='{PROMO_WEBSITE_URL}'>bergfrid.com</a>."
     )
+
+
+def _today_str() -> str:
+    return datetime.now(TZ).date().isoformat()
+
+
+def _utc_ts() -> int:
+    return int(datetime.utcnow().timestamp())
+
+
+def should_send_reboot_notice(state: dict) -> bool:
+    last_ts = int(state.get("last_reboot_notice_ts", 0) or 0)
+    now = _utc_ts()
+    return (now - last_ts) >= REBOOT_NOTICE_COOLDOWN_SECONDS
+
+
+async def send_reboot_notice_if_needed():
+    state = state_store.load()
+
+    if not should_send_reboot_notice(state):
+        log.info("Reboot/maj notice: skip (cooldown).")
+        return
+
+    targets = load_targets()
+    enabled = set(targets.get("enabled", ["discord", "telegram"]))
+
+    if "discord" in enabled:
+        await send_discord_text_to_targets(build_reboot_notice_discord())
+
+    if "telegram" in enabled:
+        await send_telegram_text(build_reboot_notice_telegram(), disable_preview=True)
+
+    state["last_reboot_notice_ts"] = _utc_ts()
+    state_store.save(state)
+    log.info("Reboot/maj notice: sent.")
 
 
 # =========================
@@ -219,6 +284,11 @@ telegram_pub = TelegramPublisher(
 # WATCHER RSS
 # =========================
 
+def mark_article_published_today(state: dict) -> None:
+    # Global: au moins un article publié aujourd'hui (peu importe la plateforme).
+    state["last_article_published_date"] = _today_str()
+
+
 @tasks.loop(minutes=RSS_POLL_MINUTES)
 async def bergfrid_watcher():
     targets = load_targets()
@@ -250,6 +320,7 @@ async def bergfrid_watcher():
             if ok:
                 published_any = True
                 state_store.sent_add(state, "discord", eid)
+                mark_article_published_today(state)
                 state_store.save(state)
                 await send_discord_text_to_targets(build_recovery_notice_discord())
 
@@ -260,6 +331,7 @@ async def bergfrid_watcher():
             if ok:
                 published_any = True
                 state_store.sent_add(state, "telegram", eid)
+                mark_article_published_today(state)
                 state_store.save(state)
                 await send_telegram_text(build_recovery_notice_telegram(), disable_preview=True)
 
@@ -288,6 +360,7 @@ async def bergfrid_watcher():
             if ok:
                 published_any = True
                 state_store.sent_add(state, "discord", eid)
+                mark_article_published_today(state)
                 state_store.save(state)
                 await send_discord_text_to_targets(build_recovery_notice_discord())
 
@@ -296,6 +369,7 @@ async def bergfrid_watcher():
             if ok:
                 published_any = True
                 state_store.sent_add(state, "telegram", eid)
+                mark_article_published_today(state)
                 state_store.save(state)
                 await send_telegram_text(build_recovery_notice_telegram(), disable_preview=True)
 
@@ -328,6 +402,7 @@ async def bergfrid_watcher():
             if discord_ok:
                 published_any = True
                 state_store.sent_add(state, "discord", eid)
+                mark_article_published_today(state)
                 state_store.save(state)
 
         # Telegram
@@ -338,6 +413,7 @@ async def bergfrid_watcher():
             if telegram_ok:
                 published_any = True
                 state_store.sent_add(state, "telegram", eid)
+                mark_article_published_today(state)
                 state_store.save(state)
 
         # Commit last_id seulement si les publishers activés sont OK
@@ -360,11 +436,24 @@ async def bergfrid_watcher():
 
 
 # =========================
-# PROMO 22:00
+# PROMO 22:00 (bonne nuit)
 # =========================
 
 @tasks.loop(time=dtime(hour=PROMO_HOUR, minute=PROMO_MINUTE, tzinfo=TZ))
 async def nightly_promo():
+    state = state_store.load()
+    today = _today_str()
+
+    # Ne rien envoyer s'il n'y a eu aucune publication aujourd'hui
+    if state.get("last_article_published_date") != today:
+        log.info("Nightly promo: skip (no article published today).")
+        return
+
+    # Ne pas renvoyer plusieurs fois la même date
+    if state.get("nightly_promo_sent_date") == today:
+        log.info("Nightly promo: skip (already sent today).")
+        return
+
     targets = load_targets()
     enabled = set(targets.get("enabled", ["discord", "telegram"]))
 
@@ -376,6 +465,9 @@ async def nightly_promo():
     if "telegram" in enabled:
         await send_telegram_text(build_night_promo_telegram(), disable_preview=True)
 
+    state["nightly_promo_sent_date"] = today
+    state_store.save(state)
+
 
 # =========================
 # EVENTS / COMMANDS
@@ -384,6 +476,9 @@ async def nightly_promo():
 @bot.event
 async def on_ready():
     log.info("Connecté: %s", bot.user)
+
+    # Message reboot/maj (même message), avec cooldown anti-spam
+    await send_reboot_notice_if_needed()
 
     if not bergfrid_watcher.is_running():
         bergfrid_watcher.start()
