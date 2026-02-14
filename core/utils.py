@@ -1,7 +1,34 @@
 import re
+import os
+import json
 import html
+import logging
 from typing import List
 from urllib.parse import urlparse, parse_qsl, urlencode, urlunparse
+
+log = logging.getLogger("bergfrid.utils")
+
+_KEYWORDS_CACHE = None
+
+
+def _load_importance_keywords() -> dict:
+    global _KEYWORDS_CACHE
+    if _KEYWORDS_CACHE is not None:
+        return _KEYWORDS_CACHE
+    path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "..", "config", "importance_keywords.json"
+    )
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            _KEYWORDS_CACHE = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError) as e:
+        log.warning("Impossible de charger importance_keywords.json: %s. Utilisation des defauts.", e)
+        _KEYWORDS_CACHE = {
+            "critical": ["critique", "urgent", "alerte", "attaque", "explosion", "guerre"],
+            "critical_emoji": "\U0001f525",
+            "default_emoji": "\U0001f4f0",
+        }
+    return _KEYWORDS_CACHE
 
 
 def truncate_text(text: str, limit: int) -> str:
@@ -12,10 +39,11 @@ def truncate_text(text: str, limit: int) -> str:
 
 
 def determine_importance_emoji(text: str) -> str:
+    kw = _load_importance_keywords()
     t = (text or "").lower()
-    if any(k in t for k in ["critique", "urgent", "alerte", "attaque", "explosion", "guerre"]):
-        return "🔥"
-    return "📰"
+    if any(k in t for k in kw.get("critical", [])):
+        return kw.get("critical_emoji", "\U0001f525")
+    return kw.get("default_emoji", "\U0001f4f0")
 
 
 def strip_html_to_text(raw_html: str) -> str:
@@ -27,6 +55,7 @@ def strip_html_to_text(raw_html: str) -> str:
         text = re.sub(r"\n{3,}", "\n\n", text).strip()
         return text
     except Exception:
+        log.debug("BeautifulSoup indisponible, fallback regex pour strip HTML.")
         txt = re.sub(r"<br\s*/?>", "\n", raw_html, flags=re.I)
         txt = re.sub(r"</p\s*>", "\n\n", txt, flags=re.I)
         txt = re.sub(r"<[^>]+>", "", txt)
@@ -35,12 +64,13 @@ def strip_html_to_text(raw_html: str) -> str:
         return txt
 
 
-def prettify_summary(text: str, max_chars: int, prefix: str = "› ") -> str:
+def prettify_summary(text: str, max_chars: int, prefix: str = "",
+                     max_paragraphs: int = 5) -> str:
     text = (text or "").strip()
     text = re.sub(r"\n{3,}", "\n\n", text)
     paras = [p.strip() for p in text.split("\n") if p.strip()]
-    if len(paras) > 7:
-        paras = paras[:7]
+    if len(paras) > max_paragraphs:
+        paras = paras[:max_paragraphs]
     pretty = "\n\n".join(prefix + p for p in paras)
     return truncate_text(pretty, max_chars)
 

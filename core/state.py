@@ -1,6 +1,9 @@
 import os
 import json
+import logging
 from typing import Any, Dict, List
+
+log = logging.getLogger("bergfrid.state")
 
 
 def _atomic_write_json(path: str, data: Dict[str, Any]) -> None:
@@ -24,19 +27,23 @@ class StateStore:
         self.path = path
         self.sent_ring_max = sent_ring_max
 
+    def _empty_state(self) -> Dict[str, Any]:
+        return {
+            "last_id": None,
+            "etag": None,
+            "modified": None,
+            "sent": {"discord": [], "telegram": []},
+        }
+
     def load(self) -> Dict[str, Any]:
         if not os.path.exists(self.path):
-            return {
-                "last_id": None,
-                "etag": None,
-                "modified": None,
-                "sent": {"discord": [], "telegram": []},
-            }
+            log.info("Fichier state %s absent, initialisation.", self.path)
+            return self._empty_state()
         try:
             with open(self.path, "r", encoding="utf-8") as f:
                 data = json.load(f)
             if not isinstance(data, dict):
-                raise ValueError("state not dict")
+                raise ValueError("state n'est pas un dict")
             data.setdefault("last_id", None)
             data.setdefault("etag", None)
             data.setdefault("modified", None)
@@ -44,13 +51,12 @@ class StateStore:
             data["sent"].setdefault("discord", [])
             data["sent"].setdefault("telegram", [])
             return data
-        except Exception:
-            return {
-                "last_id": None,
-                "etag": None,
-                "modified": None,
-                "sent": {"discord": [], "telegram": []},
-            }
+        except json.JSONDecodeError as e:
+            log.error("Fichier state %s corrompu (JSON invalide): %s. Reinitialisation.", self.path, e)
+            return self._empty_state()
+        except (OSError, ValueError) as e:
+            log.error("Erreur lecture state %s: %s. Reinitialisation.", self.path, e)
+            return self._empty_state()
 
     def save(self, state: Dict[str, Any]) -> None:
         sent = state.get("sent", {})
@@ -59,7 +65,10 @@ class StateStore:
             if isinstance(lst, list) and len(lst) > self.sent_ring_max:
                 sent[k] = lst[-self.sent_ring_max:]
         state["sent"] = sent
-        _atomic_write_json(self.path, state)
+        try:
+            _atomic_write_json(self.path, state)
+        except OSError as e:
+            log.error("Impossible de sauvegarder state dans %s: %s", self.path, e)
 
     @staticmethod
     def sent_has(state: Dict[str, Any], platform: str, entry_id: str) -> bool:

@@ -1,111 +1,84 @@
-import os
 import asyncio
 import logging
-import json
-from datetime import datetime, time as dtime
-from zoneinfo import ZoneInfo
+from datetime import time as dtime
 
 import discord
 from discord.ext import commands, tasks
 
+from core.config import (
+    DISCORD_TOKEN, TELEGRAM_TOKEN, TELEGRAM_CHAT_ID,
+    DISCORD_OFFICIAL_CHANNEL_ID,
+    DISCORD_SUMMARY_MAX, TELEGRAM_SUMMARY_MAX,
+    DISCORD_SEND_DELAY_SECONDS,
+    STATE_FILE, BERGFRID_RSS_URL, BASE_DOMAIN,
+    RSS_POLL_MINUTES, RSS_FETCH_TIMEOUT, MAX_BACKLOG_POSTS_PER_TICK,
+    ARTICLE_PUBLISH_DELAY_SECONDS, SENT_RING_MAX,
+    TZ, PROMO_HOUR, PROMO_MINUTE, TIPEEE_URL, PROMO_WEBSITE_URL,
+    FAILURE_ALERT_THRESHOLD,
+    PUBLISH_MAX_RETRIES, PUBLISH_RETRY_BASE_DELAY,
+    validate_required_env, load_targets,
+    load_discord_channels_map, save_discord_channels_map,
+    get_all_discord_target_channel_ids,
+)
 from core.state import StateStore
 from core.rss import parse_rss_with_cache, feed_to_backlog, entry_to_article
+from core.monitoring import HealthMonitor
 
-# Publishers
 from publishers.discord_pub import DiscordPublisher
 from publishers.telegram_pub import TelegramPublisher
 
-# Telegram direct sender (pour messages spéciaux)
 try:
     import aiohttp
 except ImportError:
     aiohttp = None
 
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-log = logging.getLogger("bergfrid-bot")
+# =========================
+# LOGGING
+# =========================
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+log = logging.getLogger("bergfrid")
 
 
 # =========================
-# ENV / CONFIG
+# INIT
 # =========================
 
-DISCORD_TOKEN = os.environ["DISCORD_TOKEN"]
-TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]
-TELEGRAM_CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
-DISCORD_OFFICIAL_CHANNEL_ID = int(os.getenv("DISCORD_NEWS_CHANNEL_ID", "1330916602425770088"))
+validate_required_env()
 
-STATE_FILE = os.getenv("STATE_FILE", "bergfrid_state.json")
-DISCORD_CHANNELS_FILE = os.getenv("DISCORD_CHANNELS_FILE", "discord_channels.json")
-TARGETS_FILE = os.getenv("PUBLISH_TARGETS_FILE", "config/publish_targets.json")
+intents = discord.Intents.default()
+intents.message_content = True
+intents.guilds = True
+bot = commands.Bot(command_prefix="!", intents=intents)
 
-BERGFRID_RSS_URL = "https://bergfrid.com/rss.xml"
-BASE_DOMAIN = "https://bergfrid.com"
+state_store = StateStore(STATE_FILE, sent_ring_max=SENT_RING_MAX)
 
-RSS_POLL_MINUTES = float(os.getenv("RSS_POLL_MINUTES", "2.0"))
-MAX_BACKLOG_POSTS_PER_TICK = int(os.getenv("MAX_BACKLOG_POSTS_PER_TICK", "20"))
+discord_pub = DiscordPublisher(
+    bot=bot,
+    official_channel_id=DISCORD_OFFICIAL_CHANNEL_ID,
+    send_delay=DISCORD_SEND_DELAY_SECONDS,
+    summary_max=DISCORD_SUMMARY_MAX,
+)
 
-DISCORD_SUMMARY_MAX = int(os.getenv("DISCORD_SUMMARY_MAX", "2200"))
-TELEGRAM_SUMMARY_MAX = int(os.getenv("TELEGRAM_SUMMARY_MAX", "900"))
+telegram_pub = TelegramPublisher(
+    token=TELEGRAM_TOKEN,
+    chat_id=TELEGRAM_CHAT_ID,
+    summary_max=TELEGRAM_SUMMARY_MAX,
+    max_retries=PUBLISH_MAX_RETRIES,
+    retry_base_delay=PUBLISH_RETRY_BASE_DELAY,
+)
 
-DISCORD_SEND_DELAY_SECONDS = float(os.getenv("DISCORD_SEND_DELAY_SECONDS", "0.2"))
-
-# Délai minimum entre 2 articles publiés (anti-spam)
-ARTICLE_PUBLISH_DELAY_SECONDS = float(os.getenv("ARTICLE_PUBLISH_DELAY_SECONDS", "30"))
-
-# Mémoire anti-doublons
-SENT_RING_MAX = int(os.getenv("SENT_RING_MAX", "250"))
-
-# Promo 22h
-TZ = ZoneInfo(os.getenv("BOT_TIMEZONE", "Europe/Paris"))
-PROMO_HOUR = int(os.getenv("PROMO_HOUR", "22"))
-PROMO_MINUTE = int(os.getenv("PROMO_MINUTE", "0"))
-TIPEEE_URL = os.getenv("TIPEEE_URL", "https://tipeee.com/bergfrid")
-PROMO_WEBSITE_URL = os.getenv("PROMO_WEBSITE_URL", "https://www.bergfrid.com")
+health = HealthMonitor(alert_threshold=FAILURE_ALERT_THRESHOLD)
 
 
-def load_targets():
-    try:
-        with open(TARGETS_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        if not isinstance(data, dict):
-            raise ValueError("publish_targets must be dict")
-        data.setdefault("enabled", ["discord", "telegram"])
-        data.setdefault("discord", {})
-        data.setdefault("telegram", {})
-        return data
-    except Exception:
-        return {"enabled": ["discord", "telegram"], "discord": {}, "telegram": {}}
-
-
-def load_discord_channels_map() -> dict:
-    try:
-        if os.path.exists(DISCORD_CHANNELS_FILE):
-            with open(DISCORD_CHANNELS_FILE, "r", encoding="utf-8") as f:
-                m = json.load(f)
-            return m if isinstance(m, dict) else {}
-        return {}
-    except Exception:
-        return {}
-
-
-def get_all_discord_target_channel_ids() -> list[int]:
-    ids = [DISCORD_OFFICIAL_CHANNEL_ID]
-    m = load_discord_channels_map()
-    for _, v in m.items():
-        try:
-            ids.append(int(v))
-        except Exception:
-            pass
-    # uniq stable-ish
-    out = []
-    seen = set()
-    for cid in ids:
-        if cid not in seen:
-            seen.add(cid)
-            out.append(cid)
-    return out
-
+# =========================
+# HELPERS
+# =========================
 
 async def resolve_discord_channel(cid: int):
     ch = bot.get_channel(cid)
@@ -113,7 +86,8 @@ async def resolve_discord_channel(cid: int):
         return ch
     try:
         return await bot.fetch_channel(cid)
-    except Exception:
+    except Exception as e:
+        log.warning("Impossible de resoudre le canal Discord %d: %s", cid, e)
         return None
 
 
@@ -124,14 +98,14 @@ async def send_discord_text_to_targets(text: str) -> None:
             continue
         try:
             await ch.send(content=text)
-        except Exception:
-            pass
-        await asyncio.sleep(0.2)
+        except Exception as e:
+            log.warning("Erreur envoi texte Discord canal %d: %s", cid, e)
+        await asyncio.sleep(DISCORD_SEND_DELAY_SECONDS)
 
 
 async def send_telegram_text(text: str, parse_mode: str = "HTML", disable_preview: bool = True) -> bool:
     if aiohttp is None:
-        log.error("aiohttp non installé: impossible d'envoyer Telegram (messages spéciaux).")
+        log.error("aiohttp non installe: impossible d'envoyer sur Telegram.")
         return False
     endpoint = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     payload = {
@@ -146,73 +120,106 @@ async def send_telegram_text(text: str, parse_mode: str = "HTML", disable_previe
             async with sess.post(endpoint, data=payload) as resp:
                 if resp.status != 200:
                     body = await resp.text()
-                    log.warning("Telegram special msg error status=%s body=%s", resp.status, body[:600])
+                    log.warning("Telegram msg special erreur status=%s body=%s", resp.status, body[:600])
                     return False
         return True
     except Exception as e:
-        log.warning("Telegram special msg exception: %s", e)
+        log.warning("Telegram msg special exception: %s", e)
         return False
 
 
+async def send_alert_to_platforms(message: str) -> None:
+    """Send an alert message to all enabled platforms."""
+    targets = load_targets()
+    enabled = set(targets.get("enabled", []))
+    if "discord" in enabled:
+        await send_discord_text_to_targets(f"\u26a0\ufe0f **Alerte Bergfrid**: {message}")
+    if "telegram" in enabled:
+        await send_telegram_text(f"\u26a0\ufe0f <b>Alerte Bergfrid</b>: {message}")
+
+
+# =========================
+# PROMO / RECOVERY MESSAGES
+# =========================
+
 def build_night_promo_discord() -> str:
     return (
-        "🌙 **Bonne nuit à tous.**\n"
+        "\U0001f319 **Bonne nuit \u00e0 tous.**\n"
         "Merci de lire et de partager Bergfrid.\n\n"
-        f"🖋️ Le site: {PROMO_WEBSITE_URL}\n"
-        f"☕ Soutenir le média (Tipeee): {TIPEEE_URL}"
+        f"\U0001f58b\ufe0f Le site: {PROMO_WEBSITE_URL}\n"
+        f"\u2615 Soutenir le m\u00e9dia (Tipeee): {TIPEEE_URL}"
     )
 
 
 def build_night_promo_telegram() -> str:
-    # HTML Telegram
     return (
-        "🌙 <b>Bonne nuit à tous.</b>\n"
+        "\U0001f319 <b>Bonne nuit \u00e0 tous.</b>\n"
         "Merci de lire et de partager Bergfrid.\n\n"
-        f"🖋️ <a href='{PROMO_WEBSITE_URL}'>Le site</a>\n"
-        f"☕ <a href='{TIPEEE_URL}'>Soutenir Bergfrid (Tipeee)</a>"
+        f"\U0001f58b\ufe0f <a href='{PROMO_WEBSITE_URL}'>Le site</a>\n"
+        f"\u2615 <a href='{TIPEEE_URL}'>Soutenir Bergfrid (Tipeee)</a>"
     )
 
 
 def build_recovery_notice_discord() -> str:
     return (
-        "ℹ️ **Note**: la mémoire de publication a été réinitialisée, "
+        "\u2139\ufe0f **Note**: la m\u00e9moire de publication a \u00e9t\u00e9 r\u00e9initialis\u00e9e, "
         "nous reprenons depuis le dernier article.\n"
-        f"Si vous pensez avoir loupé des publications, consultez {PROMO_WEBSITE_URL}."
+        f"Si vous pensez avoir loup\u00e9 des publications, consultez {PROMO_WEBSITE_URL}."
     )
 
 
 def build_recovery_notice_telegram() -> str:
     return (
-        "ℹ️ <b>Note</b>: la mémoire de publication a été réinitialisée, "
+        "\u2139\ufe0f <b>Note</b>: la m\u00e9moire de publication a \u00e9t\u00e9 r\u00e9initialis\u00e9e, "
         "nous reprenons depuis le dernier article.\n"
-        f"Si vous pensez avoir loupé des publications, consultez <a href='{PROMO_WEBSITE_URL}'>bergfrid.com</a>."
+        f"Si vous pensez avoir loup\u00e9 des publications, consultez "
+        f"<a href='{PROMO_WEBSITE_URL}'>bergfrid.com</a>."
     )
 
 
 # =========================
-# DISCORD BOT INIT
+# RECOVERY (factored)
 # =========================
 
-intents = discord.Intents.default()
-intents.message_content = True
-intents.guilds = True
-bot = commands.Bot(command_prefix="!", intents=intents)
+async def _recovery_publish(article, state, enabled, targets, reason: str) -> None:
+    """Publish a single article in recovery mode with recovery notice."""
+    eid = article.id
+    published_any = False
+    log.warning("Recovery (%s): publication de '%s'", reason, article.title)
 
-state_store = StateStore(STATE_FILE, sent_ring_max=SENT_RING_MAX)
+    if "discord" in enabled and not StateStore.sent_has(state, "discord", eid):
+        ok = await discord_pub.publish(article, targets.get("discord", {}))
+        if ok:
+            published_any = True
+            state_store.sent_add(state, "discord", eid)
+            state_store.save(state)
+            await send_discord_text_to_targets(build_recovery_notice_discord())
+            health.record_success("discord")
+        else:
+            if health.record_failure("discord"):
+                await send_alert_to_platforms(
+                    f"Discord a echoue {health.get_failures('discord')} fois consecutivement."
+                )
 
-discord_pub = DiscordPublisher(
-    bot=bot,
-    official_channel_id=DISCORD_OFFICIAL_CHANNEL_ID,
-    channels_file=DISCORD_CHANNELS_FILE,
-    send_delay=DISCORD_SEND_DELAY_SECONDS,
-    summary_max=DISCORD_SUMMARY_MAX,
-)
+    if "telegram" in enabled and not StateStore.sent_has(state, "telegram", eid):
+        ok = await telegram_pub.publish(article, targets.get("telegram", {}))
+        if ok:
+            published_any = True
+            state_store.sent_add(state, "telegram", eid)
+            state_store.save(state)
+            await send_telegram_text(build_recovery_notice_telegram(), disable_preview=True)
+            health.record_success("telegram")
+        else:
+            if health.record_failure("telegram"):
+                await send_alert_to_platforms(
+                    f"Telegram a echoue {health.get_failures('telegram')} fois consecutivement."
+                )
 
-telegram_pub = TelegramPublisher(
-    token=TELEGRAM_TOKEN,
-    chat_id=TELEGRAM_CHAT_ID,
-    summary_max=TELEGRAM_SUMMARY_MAX,
-)
+    state["last_id"] = eid
+    state_store.save(state)
+
+    if published_any:
+        await asyncio.sleep(ARTICLE_PUBLISH_DELAY_SECONDS)
 
 
 # =========================
@@ -227,134 +234,83 @@ async def bergfrid_watcher():
     state = state_store.load()
     last_seen = state.get("last_id")
 
-    # Fetch RSS with cache
-    feed = parse_rss_with_cache(BERGFRID_RSS_URL, BASE_DOMAIN, state)
+    feed = await parse_rss_with_cache(
+        BERGFRID_RSS_URL, BASE_DOMAIN, state, timeout=RSS_FETCH_TIMEOUT
+    )
     state_store.save(state)  # persist etag/modified even if no publish
 
     entries = getattr(feed, "entries", None) or []
     if not entries:
         return
 
-    # Recovery mode A: state vide -> publier seulement le dernier + message d'info
+    # Recovery mode A: state vide
     if not last_seen:
-        newest_entry = entries[0]
-        article = entry_to_article(newest_entry, BASE_DOMAIN)
-        eid = article.id
-
-        published_any = False
-
-        # Discord
-        if "discord" in enabled and not StateStore.sent_has(state, "discord", eid):
-            log.warning("Recovery publish (Discord): %s", article.title)
-            ok = await discord_pub.publish(article, targets.get("discord", {}))
-            if ok:
-                published_any = True
-                state_store.sent_add(state, "discord", eid)
-                state_store.save(state)
-                await send_discord_text_to_targets(build_recovery_notice_discord())
-
-        # Telegram
-        if "telegram" in enabled and not StateStore.sent_has(state, "telegram", eid):
-            log.warning("Recovery publish (Telegram): %s", article.title)
-            ok = await telegram_pub.publish(article, targets.get("telegram", {}))
-            if ok:
-                published_any = True
-                state_store.sent_add(state, "telegram", eid)
-                state_store.save(state)
-                await send_telegram_text(build_recovery_notice_telegram(), disable_preview=True)
-
-        # Commit last_id (même si une plateforme est désactivée)
-        state["last_id"] = eid
-        state_store.save(state)
-
-        # Cooldown si on a effectivement publié
-        if published_any:
-            await asyncio.sleep(ARTICLE_PUBLISH_DELAY_SECONDS)
+        article = entry_to_article(entries[0], BASE_DOMAIN)
+        await _recovery_publish(article, state, enabled, targets, reason="state vide")
         return
 
     backlog = feed_to_backlog(feed, last_seen)
 
-    # Recovery mode B: last_id pas retrouvé dans le feed -> éviter spam -> dernier seul + note
+    # Recovery mode B: last_id introuvable dans le feed
     if backlog and len(backlog) == len(entries):
-        log.warning("last_id introuvable dans le feed. Mode recovery: publication du dernier uniquement.")
-        newest_entry = entries[0]
-        article = entry_to_article(newest_entry, BASE_DOMAIN)
-        eid = article.id
-
-        published_any = False
-
-        if "discord" in enabled and not StateStore.sent_has(state, "discord", eid):
-            ok = await discord_pub.publish(article, targets.get("discord", {}))
-            if ok:
-                published_any = True
-                state_store.sent_add(state, "discord", eid)
-                state_store.save(state)
-                await send_discord_text_to_targets(build_recovery_notice_discord())
-
-        if "telegram" in enabled and not StateStore.sent_has(state, "telegram", eid):
-            ok = await telegram_pub.publish(article, targets.get("telegram", {}))
-            if ok:
-                published_any = True
-                state_store.sent_add(state, "telegram", eid)
-                state_store.save(state)
-                await send_telegram_text(build_recovery_notice_telegram(), disable_preview=True)
-
-        state["last_id"] = eid
-        state_store.save(state)
-
-        if published_any:
-            await asyncio.sleep(ARTICLE_PUBLISH_DELAY_SECONDS)
+        log.warning("last_id introuvable dans le feed. Mode recovery.")
+        article = entry_to_article(entries[0], BASE_DOMAIN)
+        await _recovery_publish(article, state, enabled, targets, reason="last_id introuvable")
         return
 
     if not backlog:
         return
 
     if len(backlog) > MAX_BACKLOG_POSTS_PER_TICK:
-        log.warning("Backlog=%s > max=%s. Troncature.", len(backlog), MAX_BACKLOG_POSTS_PER_TICK)
+        log.warning("Backlog=%d > max=%d. Troncature.", len(backlog), MAX_BACKLOG_POSTS_PER_TICK)
         backlog = backlog[:MAX_BACKLOG_POSTS_PER_TICK]
 
-    # Publication du plus ancien au plus récent
+    # Publication du plus ancien au plus recent
     for entry in reversed(backlog):
         article = entry_to_article(entry, BASE_DOMAIN)
         eid = article.id
-
         published_any = False
+        all_ok = True
 
         # Discord
-        discord_ok = True
         if "discord" in enabled and not StateStore.sent_has(state, "discord", eid):
-            log.info("Discord publish: %s", article.title)
+            log.info("Publication Discord: %s", article.title)
             discord_ok = await discord_pub.publish(article, targets.get("discord", {}))
             if discord_ok:
                 published_any = True
                 state_store.sent_add(state, "discord", eid)
                 state_store.save(state)
+                health.record_success("discord")
+            else:
+                all_ok = False
+                if health.record_failure("discord"):
+                    await send_alert_to_platforms(
+                        f"Discord a echoue {health.get_failures('discord')} fois consecutivement."
+                    )
 
         # Telegram
-        telegram_ok = True
         if "telegram" in enabled and not StateStore.sent_has(state, "telegram", eid):
-            log.info("Telegram publish: %s", article.title)
+            log.info("Publication Telegram: %s", article.title)
             telegram_ok = await telegram_pub.publish(article, targets.get("telegram", {}))
             if telegram_ok:
                 published_any = True
                 state_store.sent_add(state, "telegram", eid)
                 state_store.save(state)
+                health.record_success("telegram")
+            else:
+                all_ok = False
+                if health.record_failure("telegram"):
+                    await send_alert_to_platforms(
+                        f"Telegram a echoue {health.get_failures('telegram')} fois consecutivement."
+                    )
 
-        # Commit last_id seulement si les publishers activés sont OK
-        active_ok = True
-        if "discord" in enabled and not discord_ok:
-            active_ok = False
-        if "telegram" in enabled and not telegram_ok:
-            active_ok = False
-
-        if active_ok:
+        if all_ok:
             state["last_id"] = eid
             state_store.save(state)
         else:
             log.warning("Publication partielle pour id=%s. Stop pour retry au prochain tick.", eid)
             return
 
-        # Anti-spam: délai minimum entre chaque article effectivement publié
         if published_any:
             await asyncio.sleep(ARTICLE_PUBLISH_DELAY_SECONDS)
 
@@ -383,15 +339,15 @@ async def nightly_promo():
 
 @bot.event
 async def on_ready():
-    log.info("Connecté: %s", bot.user)
+    log.info("Connecte: %s", bot.user)
 
     if not bergfrid_watcher.is_running():
         bergfrid_watcher.start()
-        log.info("Tâche RSS démarrée: %s min", RSS_POLL_MINUTES)
+        log.info("Tache RSS demarree: %s min", RSS_POLL_MINUTES)
 
     if not nightly_promo.is_running():
         nightly_promo.start()
-        log.info("Tâche promo démarrée: chaque jour à %02d:%02d (%s)", PROMO_HOUR, PROMO_MINUTE, TZ.key)
+        log.info("Tache promo demarree: chaque jour a %02d:%02d (%s)", PROMO_HOUR, PROMO_MINUTE, TZ.key)
 
 
 @bot.command(name="setnews")
@@ -399,60 +355,36 @@ async def on_ready():
 async def set_news_channel(ctx: commands.Context, channel: discord.TextChannel = None):
     channel = ctx.channel if channel is None else channel
 
-    try:
-        if os.path.exists(DISCORD_CHANNELS_FILE):
-            with open(DISCORD_CHANNELS_FILE, "r", encoding="utf-8") as f:
-                channels_map = json.load(f)
-            if not isinstance(channels_map, dict):
-                channels_map = {}
-        else:
-            channels_map = {}
-    except Exception:
-        channels_map = {}
-
+    channels_map = load_discord_channels_map()
     channels_map[str(ctx.guild.id)] = int(channel.id)
+    save_discord_channels_map(channels_map)
 
-    tmp = f"{DISCORD_CHANNELS_FILE}.tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(channels_map, f, ensure_ascii=False, indent=2)
-    os.replace(tmp, DISCORD_CHANNELS_FILE)
-
-    await ctx.send(f"✅ Ce serveur publiera les nouvelles dans {channel.mention}.")
+    await ctx.send(f"\u2705 Ce serveur publiera les nouvelles dans {channel.mention}.")
 
 
 @bot.command(name="unsetnews")
 @commands.has_permissions(manage_channels=True)
 async def unset_news_channel(ctx: commands.Context):
-    try:
-        with open(DISCORD_CHANNELS_FILE, "r", encoding="utf-8") as f:
-            channels_map = json.load(f)
-        if not isinstance(channels_map, dict):
-            channels_map = {}
-    except Exception:
-        channels_map = {}
-
+    channels_map = load_discord_channels_map()
     gid = str(ctx.guild.id)
     if gid in channels_map:
         del channels_map[gid]
-        tmp = f"{DISCORD_CHANNELS_FILE}.tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(channels_map, f, ensure_ascii=False, indent=2)
-        os.replace(tmp, DISCORD_CHANNELS_FILE)
-        await ctx.send("❌ Canal de nouvelles retiré pour ce serveur.")
+        save_discord_channels_map(channels_map)
+        await ctx.send("\u274c Canal de nouvelles retire pour ce serveur.")
     else:
-        await ctx.send("ℹ️ Aucun canal n'était configuré.")
+        await ctx.send("\u2139\ufe0f Aucun canal n'\u00e9tait configure.")
 
 
 @bot.command(name="rsssync")
 @commands.has_permissions(manage_channels=True)
 async def rss_sync(ctx: commands.Context):
     state = state_store.load()
-    feed = parse_rss_with_cache(BERGFRID_RSS_URL, BASE_DOMAIN, state)
+    feed = await parse_rss_with_cache(BERGFRID_RSS_URL, BASE_DOMAIN, state, timeout=RSS_FETCH_TIMEOUT)
     state_store.save(state)
 
     entries = getattr(feed, "entries", None) or []
     if not entries:
-        await ctx.send("⚠️ Flux RSS vide ou inaccessible.")
+        await ctx.send("\u26a0\ufe0f Flux RSS vide ou inaccessible.")
         return
 
     newest_entry = entries[0]
@@ -460,7 +392,7 @@ async def rss_sync(ctx: commands.Context):
     state["last_id"] = article.id
     state_store.save(state)
 
-    await ctx.send(f"✅ Synchronisé sur last_id={state['last_id']} (aucune publication).")
+    await ctx.send(f"\u2705 Synchronise sur last_id={state['last_id']} (aucune publication).")
 
 
 async def _shutdown():

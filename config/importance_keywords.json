@@ -1,0 +1,11 @@
+{
+    "critical": [
+        "critique", "urgent", "alerte", "attaque", "explosion", "guerre",
+        "attentat", "offensive", "frappe", "bombardement", "invasion",
+        "missile", "nucléaire", "terrorisme", "escalade", "ultimatum",
+        "mobilisation", "état d'urgence", "coup d'état", "insurrection",
+        "capitulation", "cessez-le-feu rompu", "loi martiale"
+    ],
+    "critical_emoji": "🔥",
+    "default_emoji": "📰"
+}

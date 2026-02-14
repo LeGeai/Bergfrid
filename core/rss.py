@@ -1,3 +1,5 @@
+import asyncio
+import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 from urllib.parse import urljoin
@@ -6,6 +8,8 @@ import feedparser
 
 from core.models import Article
 from core.utils import strip_html_to_text, extract_tags_from_terms
+
+log = logging.getLogger("bergfrid.rss")
 
 
 def _entry_id(entry: Any) -> str:
@@ -32,7 +36,7 @@ def _author(entry: Any) -> str:
     dc = getattr(entry, "dc_creator", None)
     if dc:
         return str(dc).strip()
-    return "Rédaction"
+    return "Redaction"
 
 
 def _category(entry: Any) -> str:
@@ -53,16 +57,40 @@ def _published_dt(entry: Any) -> Optional[datetime]:
         try:
             return datetime(*st[:6], tzinfo=timezone.utc)
         except Exception:
+            log.debug("Impossible de parser la date de publication.")
             return None
     return None
 
 
-def parse_rss_with_cache(url: str, base_domain: str, state: Dict[str, Any]) -> Any:
-    feed = feedparser.parse(url, etag=state.get("etag"), modified=state.get("modified"))
+def _parse_rss_sync(url: str, etag: Optional[str], modified: Optional[str]) -> Any:
+    """Synchronous RSS parse (called via asyncio.to_thread)."""
+    return feedparser.parse(url, etag=etag, modified=modified)
+
+
+async def parse_rss_with_cache(url: str, base_domain: str, state: Dict[str, Any],
+                                timeout: float = 30) -> Any:
+    """Async RSS fetch with timeout. Runs feedparser in a thread pool."""
+    try:
+        feed = await asyncio.wait_for(
+            asyncio.to_thread(_parse_rss_sync, url, state.get("etag"), state.get("modified")),
+            timeout=timeout,
+        )
+    except asyncio.TimeoutError:
+        log.error("Timeout RSS apres %.0fs pour %s", timeout, url)
+        return feedparser.parse("")
+    except Exception as e:
+        log.error("Erreur fetch RSS: %s", e)
+        return feedparser.parse("")
+
     if getattr(feed, "etag", None):
         state["etag"] = feed.etag
     if getattr(feed, "modified", None):
         state["modified"] = feed.modified
+
+    status = getattr(feed, "status", None)
+    entries = getattr(feed, "entries", None) or []
+    log.debug("RSS fetch status=%s, entries=%d", status, len(entries))
+
     return feed
 
 
