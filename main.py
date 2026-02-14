@@ -9,6 +9,7 @@ from core.config import (
     DISCORD_TOKEN, TELEGRAM_TOKEN, TELEGRAM_CHAT_ID,
     DISCORD_OFFICIAL_CHANNEL_ID,
     DISCORD_SUMMARY_MAX, TELEGRAM_SUMMARY_MAX, TWITTER_TWEET_MAX,
+    MASTODON_POST_MAX, BLUESKY_POST_MAX,
     DISCORD_SEND_DELAY_SECONDS,
     STATE_FILE, BERGFRID_RSS_URL, BASE_DOMAIN,
     RSS_POLL_MINUTES, RSS_FETCH_TIMEOUT, MAX_BACKLOG_POSTS_PER_TICK,
@@ -19,6 +20,8 @@ from core.config import (
     REBOOT_NOTICE_COOLDOWN_SECONDS,
     TWITTER_API_KEY, TWITTER_API_SECRET,
     TWITTER_ACCESS_TOKEN, TWITTER_ACCESS_SECRET,
+    MASTODON_INSTANCE_URL, MASTODON_ACCESS_TOKEN,
+    BLUESKY_HANDLE, BLUESKY_APP_PASSWORD,
     validate_required_env, load_targets,
     load_discord_channels_map, save_discord_channels_map,
     get_all_discord_target_channel_ids,
@@ -30,6 +33,8 @@ from core.monitoring import HealthMonitor
 from publishers.discord_pub import DiscordPublisher
 from publishers.telegram_pub import TelegramPublisher
 from publishers.twitter_pub import TwitterPublisher
+from publishers.mastodon_pub import MastodonPublisher
+from publishers.bluesky_pub import BlueskyPublisher
 
 try:
     import aiohttp
@@ -101,6 +106,41 @@ else:
     if not TWITTER_ACCESS_SECRET:
         missing.append("TWITTER_ACCESS_SECRET")
     log.warning("Twitter publisher: DESACTIVE. Variables manquantes: %s", ", ".join(missing))
+
+if all([MASTODON_INSTANCE_URL, MASTODON_ACCESS_TOKEN]):
+    mastodon_pub = MastodonPublisher(
+        instance_url=MASTODON_INSTANCE_URL,
+        access_token=MASTODON_ACCESS_TOKEN,
+        post_max=MASTODON_POST_MAX,
+        max_retries=PUBLISH_MAX_RETRIES,
+        retry_base_delay=PUBLISH_RETRY_BASE_DELAY,
+    )
+    log.info("Mastodon publisher: ACTIVE (%s).", MASTODON_INSTANCE_URL)
+else:
+    mastodon_pub = None
+    log.info("Mastodon publisher: DESACTIVE (variables non configurees).")
+
+if all([BLUESKY_HANDLE, BLUESKY_APP_PASSWORD]):
+    bluesky_pub = BlueskyPublisher(
+        handle=BLUESKY_HANDLE,
+        app_password=BLUESKY_APP_PASSWORD,
+        post_max=BLUESKY_POST_MAX,
+        max_retries=PUBLISH_MAX_RETRIES,
+        retry_base_delay=PUBLISH_RETRY_BASE_DELAY,
+    )
+    log.info("Bluesky publisher: ACTIVE (@%s).", BLUESKY_HANDLE)
+else:
+    bluesky_pub = None
+    log.info("Bluesky publisher: DESACTIVE (variables non configurees).")
+
+# Dict des publishers optionnels (sans message de recovery special)
+_optional_publishers = {}
+if twitter_pub:
+    _optional_publishers["twitter"] = twitter_pub
+if mastodon_pub:
+    _optional_publishers["mastodon"] = mastodon_pub
+if bluesky_pub:
+    _optional_publishers["bluesky"] = bluesky_pub
 
 health = HealthMonitor(alert_threshold=FAILURE_ALERT_THRESHOLD)
 
@@ -305,19 +345,21 @@ async def _recovery_publish(article, state, enabled, targets, reason: str) -> No
                     f"Telegram a echoue {health.get_failures('telegram')} fois consecutivement."
                 )
 
-    if "twitter" in enabled and twitter_pub and not StateStore.sent_has(state, "twitter", eid):
-        ok = await twitter_pub.publish(article, targets.get("twitter", {}))
-        if ok:
-            published_any = True
-            state_store.sent_add(state, "twitter", eid)
-            mark_article_published_today(state)
-            state_store.save(state)
-            health.record_success("twitter")
-        else:
-            if health.record_failure("twitter"):
-                await send_alert_to_platforms(
-                    f"Twitter a echoue {health.get_failures('twitter')} fois consecutivement."
-                )
+    # Plateformes optionnelles (twitter, mastodon, bluesky)
+    for platform, pub in _optional_publishers.items():
+        if platform in enabled and not StateStore.sent_has(state, platform, eid):
+            ok = await pub.publish(article, targets.get(platform, {}))
+            if ok:
+                published_any = True
+                state_store.sent_add(state, platform, eid)
+                mark_article_published_today(state)
+                state_store.save(state)
+                health.record_success(platform)
+            else:
+                if health.record_failure(platform):
+                    await send_alert_to_platforms(
+                        f"{platform.capitalize()} a echoue {health.get_failures(platform)} fois consecutivement."
+                    )
 
     state["last_id"] = eid
     state_store.save(state)
@@ -415,22 +457,23 @@ async def bergfrid_watcher():
                         f"Telegram a echoue {health.get_failures('telegram')} fois consecutivement."
                     )
 
-        # Twitter
-        if "twitter" in enabled and twitter_pub and not StateStore.sent_has(state, "twitter", eid):
-            log.info("Publication Twitter: %s", article.title)
-            twitter_ok = await twitter_pub.publish(article, targets.get("twitter", {}))
-            if twitter_ok:
-                published_any = True
-                state_store.sent_add(state, "twitter", eid)
-                mark_article_published_today(state)
-                state_store.save(state)
-                health.record_success("twitter")
-            else:
-                all_ok = False
-                if health.record_failure("twitter"):
-                    await send_alert_to_platforms(
-                        f"Twitter a echoue {health.get_failures('twitter')} fois consecutivement."
-                    )
+        # Plateformes optionnelles (twitter, mastodon, bluesky)
+        for platform, pub in _optional_publishers.items():
+            if platform in enabled and not StateStore.sent_has(state, platform, eid):
+                log.info("Publication %s: %s", platform, article.title)
+                plat_ok = await pub.publish(article, targets.get(platform, {}))
+                if plat_ok:
+                    published_any = True
+                    state_store.sent_add(state, platform, eid)
+                    mark_article_published_today(state)
+                    state_store.save(state)
+                    health.record_success(platform)
+                else:
+                    all_ok = False
+                    if health.record_failure(platform):
+                        await send_alert_to_platforms(
+                            f"{platform.capitalize()} a echoue {health.get_failures(platform)} fois consecutivement."
+                        )
 
         if all_ok:
             state["last_id"] = eid
@@ -455,11 +498,8 @@ CATCHUP_WINDOW = 5  # nombre d'articles recents a verifier
 
 async def _catchup_missing_platforms(entries, state, enabled, targets):
     """Publie les articles recents manquants sur les plateformes en retard."""
-    publishers = {
-        "discord": discord_pub,
-        "telegram": telegram_pub,
-        "twitter": twitter_pub,
-    }
+    publishers = {"discord": discord_pub, "telegram": telegram_pub}
+    publishers.update(_optional_publishers)
 
     for entry in entries[:CATCHUP_WINDOW]:
         article = entry_to_article(entry, BASE_DOMAIN)

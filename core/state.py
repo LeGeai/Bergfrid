@@ -20,9 +20,11 @@ class StateStore:
       "last_id": "...",
       "etag": "...",
       "modified": ...,
-      "sent": { "discord": [...], "telegram": [...] }
+      "sent": { "discord": [...], "telegram": [...], ... }
     }
     """
+    PLATFORMS = ("discord", "telegram", "twitter", "mastodon", "bluesky")
+
     def __init__(self, path: str, sent_ring_max: int = 250):
         self.path = path
         self.sent_ring_max = sent_ring_max
@@ -32,7 +34,7 @@ class StateStore:
             "last_id": None,
             "etag": None,
             "modified": None,
-            "sent": {"discord": [], "telegram": [], "twitter": []},
+            "sent": {p: [] for p in self.PLATFORMS},
         }
 
     def load(self) -> Dict[str, Any]:
@@ -47,10 +49,9 @@ class StateStore:
             data.setdefault("last_id", None)
             data.setdefault("etag", None)
             data.setdefault("modified", None)
-            data.setdefault("sent", {"discord": [], "telegram": []})
-            data["sent"].setdefault("discord", [])
-            data["sent"].setdefault("telegram", [])
-            data["sent"].setdefault("twitter", [])
+            data.setdefault("sent", {})
+            for p in self.PLATFORMS:
+                data["sent"].setdefault(p, [])
             return data
         except json.JSONDecodeError as e:
             log.error("Fichier state %s corrompu (JSON invalide): %s. Reinitialisation.", self.path, e)
@@ -61,7 +62,7 @@ class StateStore:
 
     def save(self, state: Dict[str, Any]) -> None:
         sent = state.get("sent", {})
-        for k in ("discord", "telegram", "twitter"):
+        for k in self.PLATFORMS:
             lst = sent.get(k, [])
             if isinstance(lst, list) and len(lst) > self.sent_ring_max:
                 sent[k] = lst[-self.sent_ring_max:]

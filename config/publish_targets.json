@@ -1,6 +1,8 @@
 {
-  "enabled": ["discord", "telegram", "twitter"],
+  "enabled": ["discord", "telegram", "mastodon", "bluesky"],
   "discord": {},
   "telegram": {},
-  "twitter": {}
+  "twitter": {},
+  "mastodon": {},
+  "bluesky": {}
 }

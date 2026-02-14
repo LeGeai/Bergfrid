@@ -21,6 +21,14 @@ TWITTER_API_SECRET: str = os.environ.get("TWITTER_API_SECRET", "")
 TWITTER_ACCESS_TOKEN: str = os.environ.get("TWITTER_ACCESS_TOKEN", "")
 TWITTER_ACCESS_SECRET: str = os.environ.get("TWITTER_ACCESS_SECRET", "")
 
+# Mastodon
+MASTODON_INSTANCE_URL: str = os.environ.get("MASTODON_INSTANCE_URL", "")
+MASTODON_ACCESS_TOKEN: str = os.environ.get("MASTODON_ACCESS_TOKEN", "")
+
+# Bluesky
+BLUESKY_HANDLE: str = os.environ.get("BLUESKY_HANDLE", "")
+BLUESKY_APP_PASSWORD: str = os.environ.get("BLUESKY_APP_PASSWORD", "")
+
 # =========================
 # File paths
 # =========================
@@ -43,6 +51,8 @@ MAX_BACKLOG_POSTS_PER_TICK: int = int(os.getenv("MAX_BACKLOG_POSTS_PER_TICK", "2
 DISCORD_SUMMARY_MAX: int = int(os.getenv("DISCORD_SUMMARY_MAX", "2200"))
 TELEGRAM_SUMMARY_MAX: int = int(os.getenv("TELEGRAM_SUMMARY_MAX", "900"))
 TWITTER_TWEET_MAX: int = int(os.getenv("TWITTER_TWEET_MAX", "280"))
+MASTODON_POST_MAX: int = int(os.getenv("MASTODON_POST_MAX", "500"))
+BLUESKY_POST_MAX: int = int(os.getenv("BLUESKY_POST_MAX", "300"))
 DISCORD_SEND_DELAY_SECONDS: float = float(os.getenv("DISCORD_SEND_DELAY_SECONDS", "0.2"))
 ARTICLE_PUBLISH_DELAY_SECONDS: float = float(os.getenv("ARTICLE_PUBLISH_DELAY_SECONDS", "30"))
 SENT_RING_MAX: int = int(os.getenv("SENT_RING_MAX", "250"))
@@ -95,6 +105,14 @@ def validate_required_env() -> None:
     twitter_vars = [TWITTER_API_KEY, TWITTER_API_SECRET, TWITTER_ACCESS_TOKEN, TWITTER_ACCESS_SECRET]
     if any(twitter_vars) and not all(twitter_vars):
         log.warning("Twitter partiellement configure: certaines cles manquent.")
+    # Mastodon: warn if partial
+    mastodon_vars = [MASTODON_INSTANCE_URL, MASTODON_ACCESS_TOKEN]
+    if any(mastodon_vars) and not all(mastodon_vars):
+        log.warning("Mastodon partiellement configure: certaines cles manquent.")
+    # Bluesky: warn if partial
+    bluesky_vars = [BLUESKY_HANDLE, BLUESKY_APP_PASSWORD]
+    if any(bluesky_vars) and not all(bluesky_vars):
+        log.warning("Bluesky partiellement configure: certaines cles manquent.")
 
 
 def load_targets() -> dict:
@@ -108,6 +126,8 @@ def load_targets() -> dict:
         data.setdefault("discord", {})
         data.setdefault("telegram", {})
         data.setdefault("twitter", {})
+        data.setdefault("mastodon", {})
+        data.setdefault("bluesky", {})
         return data
     except FileNotFoundError:
         log.warning("Fichier %s introuvable, valeurs par defaut.", TARGETS_FILE)
