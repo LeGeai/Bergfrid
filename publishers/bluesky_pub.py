@@ -1,6 +1,5 @@
 import asyncio
 import logging
-import re
 from typing import Dict, Any
 
 from core.models import Article
@@ -40,52 +39,37 @@ class BlueskyPublisher:
         return self._client
 
     def _build_post_text(self, article: Article) -> str:
-        url = add_utm(article.url, source="bluesky", medium="social", campaign="rss")
+        """Build text body (without URL — URL goes in the embed card)."""
         emoji = determine_importance_emoji(article.summary)
-
-        url_budget = len(url) + 1  # +1 for \n before url
-        available = self.post_max - url_budget
 
         if article.social_summary:
             text = f"{emoji} {article.social_summary}"
-            text = truncate_text(text, available)
-            return f"{text}\n{url}"
         else:
             text = f"{emoji} {article.title}"
-            text = truncate_text(text, available)
-            return f"{text}\n{url}"
 
-    @staticmethod
-    def _detect_facets(text: str):
-        """Detect URLs in text and build Bluesky facets for clickable links."""
+        return truncate_text(text, self.post_max)
+
+    def _build_embed(self, article: Article):
+        """Build an external embed (link card) for the article."""
         try:
             from atproto import models
         except ImportError:
             return None
 
-        facets = []
-        url_pattern = re.compile(r'https?://\S+')
-        text_bytes = text.encode('utf-8')
+        url = add_utm(article.url, source="bluesky", medium="social", campaign="rss")
 
-        for match in url_pattern.finditer(text):
-            url = match.group(0)
-            # Calculate byte positions for facet
-            start_byte = len(text[:match.start()].encode('utf-8'))
-            end_byte = start_byte + len(url.encode('utf-8'))
-            facets.append(
-                models.AppBskyRichtextFacet.Main(
-                    index=models.AppBskyRichtextFacet.ByteSlice(
-                        byte_start=start_byte,
-                        byte_end=end_byte,
-                    ),
-                    features=[
-                        models.AppBskyRichtextFacet.Link(uri=url),
-                    ],
-                )
+        # Description: social_summary ou debut du summary
+        description = article.social_summary or truncate_text(article.summary, 300)
+
+        return models.AppBskyEmbedExternal.Main(
+            external=models.AppBskyEmbedExternal.External(
+                uri=url,
+                title=article.title,
+                description=description,
             )
-        return facets if facets else None
+        )
 
-    def _post_skeet(self, text: str) -> bool:
+    def _post_skeet(self, text: str, embed) -> bool:
         """Synchronous post (called via to_thread)."""
         client = self._ensure_client()
         if client is None:
@@ -93,8 +77,7 @@ class BlueskyPublisher:
 
         for attempt in range(1, self.max_retries + 1):
             try:
-                facets = self._detect_facets(text)
-                resp = client.send_post(text=text, facets=facets)
+                resp = client.send_post(text=text, embed=embed)
                 if resp and resp.uri:
                     return True
                 log.warning("Bluesky: reponse inattendue: %s", resp)
@@ -131,7 +114,8 @@ class BlueskyPublisher:
     async def publish(self, article: Article, cfg: Dict[str, Any]) -> bool:
         try:
             text = self._build_post_text(article)
-            ok = await asyncio.to_thread(self._post_skeet, text)
+            embed = self._build_embed(article)
+            ok = await asyncio.to_thread(self._post_skeet, text, embed)
             if ok:
                 log.info("Bluesky: publie '%s'.", article.title[:60])
             else:

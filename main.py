@@ -242,36 +242,11 @@ def build_night_promo_telegram() -> str:
 
 
 def build_reboot_notice_discord() -> str:
-    return (
-        "\U0001f504 **Mise \u00e0 jour effectu\u00e9e**\n"
-        "Le logiciel de diffusion des actualit\u00e9s vient d'\u00eatre mis \u00e0 jour pour votre confort.\n"
-        f"N'h\u00e9sitez pas \u00e0 visiter notre site : {PROMO_WEBSITE_URL}"
-    )
+    return "\U0001f504 *Mise \u00e0 jour effectu\u00e9e.*"
 
 
 def build_reboot_notice_telegram() -> str:
-    return (
-        "\U0001f504 <b>Mise \u00e0 jour effectu\u00e9e</b>\n"
-        "Le logiciel de diffusion des actualit\u00e9s vient d'\u00eatre mis \u00e0 jour pour votre confort.\n"
-        f"N'h\u00e9sitez pas \u00e0 visiter <a href='{PROMO_WEBSITE_URL}'>le site</a>."
-    )
-
-
-def build_recovery_notice_discord() -> str:
-    return (
-        "\u2139\ufe0f **Note**: la m\u00e9moire de publication a \u00e9t\u00e9 r\u00e9initialis\u00e9e, "
-        "nous reprenons depuis le dernier article.\n"
-        f"Si vous pensez avoir loup\u00e9 des publications, consultez {PROMO_WEBSITE_URL}."
-    )
-
-
-def build_recovery_notice_telegram() -> str:
-    return (
-        "\u2139\ufe0f <b>Note</b>: la m\u00e9moire de publication a \u00e9t\u00e9 r\u00e9initialis\u00e9e, "
-        "nous reprenons depuis le dernier article.\n"
-        f"Si vous pensez avoir loup\u00e9 des publications, consultez "
-        f"<a href='{PROMO_WEBSITE_URL}'>bergfrid.com</a>."
-    )
+    return "\U0001f504 <i>Mise \u00e0 jour effectu\u00e9e.</i>"
 
 
 # =========================
@@ -306,66 +281,33 @@ async def send_reboot_notice_if_needed():
 
 
 # =========================
-# RECOVERY (factored)
+# SEED (anti-doublon au redemarrage)
 # =========================
 
-async def _recovery_publish(article, state, enabled, targets, reason: str) -> None:
-    """Publish a single article in recovery mode with recovery notice."""
-    eid = article.id
-    published_any = False
-    log.warning("Recovery (%s): publication de '%s'", reason, article.title)
+def _seed_state_from_entries(entries, state, enabled) -> None:
+    """Seed state from current RSS entries without publishing.
 
-    if "discord" in enabled and not StateStore.sent_has(state, "discord", eid):
-        ok = await discord_pub.publish(article, targets.get("discord", {}))
-        if ok:
-            published_any = True
-            state_store.sent_add(state, "discord", eid)
-            mark_article_published_today(state)
-            state_store.save(state)
-            await send_discord_text_to_targets(build_recovery_notice_discord())
-            health.record_success("discord")
-        else:
-            if health.record_failure("discord"):
-                await send_alert_to_platforms(
-                    f"Discord a echoue {health.get_failures('discord')} fois consecutivement."
-                )
+    Marks all current entries as already sent on every enabled platform,
+    so that only genuinely NEW articles get published after a redeploy.
+    """
+    all_platforms = {"discord", "telegram"}
+    all_platforms.update(_optional_publishers.keys())
+    active = all_platforms & set(enabled)
 
-    if "telegram" in enabled and not StateStore.sent_has(state, "telegram", eid):
-        ok = await telegram_pub.publish(article, targets.get("telegram", {}))
-        if ok:
-            published_any = True
-            state_store.sent_add(state, "telegram", eid)
-            mark_article_published_today(state)
-            state_store.save(state)
-            await send_telegram_text(build_recovery_notice_telegram(), disable_preview=True)
-            health.record_success("telegram")
-        else:
-            if health.record_failure("telegram"):
-                await send_alert_to_platforms(
-                    f"Telegram a echoue {health.get_failures('telegram')} fois consecutivement."
-                )
+    count = 0
+    for entry in entries:
+        article = entry_to_article(entry, BASE_DOMAIN)
+        eid = article.id
+        for platform in active:
+            state_store.sent_add(state, platform, eid)
+        count += 1
 
-    # Plateformes optionnelles (twitter, mastodon, bluesky)
-    for platform, pub in _optional_publishers.items():
-        if platform in enabled and not StateStore.sent_has(state, platform, eid):
-            ok = await pub.publish(article, targets.get(platform, {}))
-            if ok:
-                published_any = True
-                state_store.sent_add(state, platform, eid)
-                mark_article_published_today(state)
-                state_store.save(state)
-                health.record_success(platform)
-            else:
-                if health.record_failure(platform):
-                    await send_alert_to_platforms(
-                        f"{platform.capitalize()} a echoue {health.get_failures(platform)} fois consecutivement."
-                    )
+    if entries:
+        newest = entry_to_article(entries[0], BASE_DOMAIN)
+        state["last_id"] = newest.id
 
-    state["last_id"] = eid
     state_store.save(state)
-
-    if published_any:
-        await asyncio.sleep(ARTICLE_PUBLISH_DELAY_SECONDS)
+    log.info("Seed: %d articles marques comme deja envoyes sur %s.", count, ", ".join(sorted(active)))
 
 
 # =========================
@@ -393,19 +335,18 @@ async def bergfrid_watcher():
     if not entries:
         return
 
-    # Recovery mode A: state vide
+    # Recovery mode A: state vide — seed sans publier
     if not last_seen:
-        article = entry_to_article(entries[0], BASE_DOMAIN)
-        await _recovery_publish(article, state, enabled, targets, reason="state vide")
+        log.info("State vide: seed depuis le flux RSS (pas de publication).")
+        _seed_state_from_entries(entries, state, enabled)
         return
 
     backlog = feed_to_backlog(feed, last_seen)
 
-    # Recovery mode B: last_id introuvable dans le feed
+    # Recovery mode B: last_id introuvable — seed sans publier
     if backlog and len(backlog) == len(entries):
-        log.warning("last_id introuvable dans le feed. Mode recovery.")
-        article = entry_to_article(entries[0], BASE_DOMAIN)
-        await _recovery_publish(article, state, enabled, targets, reason="last_id introuvable")
+        log.warning("last_id introuvable dans le feed. Seed sans publication.")
+        _seed_state_from_entries(entries, state, enabled)
         return
 
     if not backlog:
