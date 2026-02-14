@@ -57,8 +57,13 @@ FAILURE_ALERT_THRESHOLD: int = int(os.getenv("FAILURE_ALERT_THRESHOLD", "5"))
 TZ: ZoneInfo = ZoneInfo(os.getenv("BOT_TIMEZONE", "Europe/Paris"))
 PROMO_HOUR: int = int(os.getenv("PROMO_HOUR", "22"))
 PROMO_MINUTE: int = int(os.getenv("PROMO_MINUTE", "0"))
-TIPEEE_URL: str = os.getenv("TIPEEE_URL", "https://tipeee.com/bergfrid")
+TIPEEE_URL: str = os.getenv("TIPEEE_URL", "https://fr.tipeee.com/parlement-des-hiboux")
 PROMO_WEBSITE_URL: str = os.getenv("PROMO_WEBSITE_URL", "https://www.bergfrid.com")
+
+# =========================
+# Reboot notice
+# =========================
+REBOOT_NOTICE_COOLDOWN_SECONDS: int = int(os.getenv("REBOOT_NOTICE_COOLDOWN_SECONDS", "600"))
 
 # =========================
 # Embed styling
