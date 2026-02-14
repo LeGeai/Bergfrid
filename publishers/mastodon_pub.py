@@ -39,18 +39,22 @@ class MastodonPublisher:
         url = add_utm(article.url, source="mastodon", medium="social", campaign="rss")
         emoji = determine_importance_emoji(article.summary)
 
-        # URL counts as-is on Mastodon (no shortening like t.co)
-        url_budget = len(url) + 1  # +1 for \n before url
-        available = self.post_max - url_budget
+        # Reserve space for URL and hashtags
+        hashtag_line = " ".join(article.tags[:5]) if article.tags else ""
+        fixed_len = len(url) + 1  # \n before url
+        if hashtag_line:
+            fixed_len += len(hashtag_line) + 2  # \n\n before hashtags
+        available = self.post_max - fixed_len
 
         if article.social_summary:
             text = f"{emoji} {article.social_summary}"
-            text = truncate_text(text, available)
-            return f"{text}\n{url}"
         else:
             text = f"{emoji} {article.title}"
-            text = truncate_text(text, available)
-            return f"{text}\n{url}"
+        text = truncate_text(text, available)
+
+        if hashtag_line:
+            return f"{text}\n\n{hashtag_line}\n{url}"
+        return f"{text}\n{url}"
 
     def _post_status(self, text: str) -> bool:
         """Synchronous post (called via to_thread)."""

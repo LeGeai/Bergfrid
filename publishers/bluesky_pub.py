@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import urllib.request
 from typing import Dict, Any
 
 from core.models import Article
@@ -47,10 +48,36 @@ class BlueskyPublisher:
         else:
             text = f"{emoji} {article.title}"
 
-        return truncate_text(text, self.post_max)
+        # Hashtags
+        if article.tags:
+            hashtag_line = " ".join(article.tags[:5])
+            budget = self.post_max - len(hashtag_line) - 2  # 2 for \n\n
+            text = truncate_text(text, budget)
+            text = f"{text}\n\n{hashtag_line}"
+        else:
+            text = truncate_text(text, self.post_max)
+
+        return text
+
+    def _upload_thumb(self, image_url: str):
+        """Download image and upload as blob for embed thumbnail."""
+        client = self._ensure_client()
+        if not client:
+            return None
+        try:
+            req = urllib.request.Request(
+                image_url, headers={"User-Agent": "Bergfrid-Bot/1.0"}
+            )
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                data = resp.read()
+            blob_resp = client.upload_blob(data)
+            return blob_resp.blob
+        except Exception as e:
+            log.warning("Bluesky: echec upload image: %s", e)
+            return None
 
     def _build_embed(self, article: Article):
-        """Build an external embed (link card) for the article."""
+        """Build an external embed (link card) with optional thumbnail."""
         try:
             from atproto import models
         except ImportError:
@@ -61,11 +88,16 @@ class BlueskyPublisher:
         # Description: social_summary ou debut du summary
         description = article.social_summary or truncate_text(article.summary, 300)
 
+        thumb = None
+        if article.image_url:
+            thumb = self._upload_thumb(article.image_url)
+
         return models.AppBskyEmbedExternal.Main(
             external=models.AppBskyEmbedExternal.External(
                 uri=url,
                 title=article.title,
                 description=description,
+                thumb=thumb,
             )
         )
 

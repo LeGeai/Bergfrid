@@ -14,4 +14,5 @@ class Article:
     category: str
     published_at: Optional[datetime]  # UTC si possible
     social_summary: str = ""  # texte court pour Twitter/réseaux sociaux
+    image_url: str = ""  # URL image article (media:content / enclosure)
     source: str = "Bergfrid"

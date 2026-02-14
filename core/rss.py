@@ -51,6 +51,29 @@ def _category(entry: Any) -> str:
     return ""
 
 
+def _image_url(entry: Any, base_domain: str) -> str:
+    """Extract article image URL from media:content, media:thumbnail, or enclosure."""
+    mc = getattr(entry, "media_content", None) or []
+    if mc and isinstance(mc, list):
+        for m in mc:
+            url = m.get("url", "")
+            if url:
+                return urljoin(base_domain, url)
+    mt = getattr(entry, "media_thumbnail", None) or []
+    if mt and isinstance(mt, list):
+        for m in mt:
+            url = m.get("url", "")
+            if url:
+                return urljoin(base_domain, url)
+    enc = getattr(entry, "enclosures", None) or []
+    if enc and isinstance(enc, list):
+        for e in enc:
+            url = e.get("href", "") or e.get("url", "")
+            if url and "image" in e.get("type", ""):
+                return urljoin(base_domain, url)
+    return ""
+
+
 def _published_dt(entry: Any) -> Optional[datetime]:
     st = getattr(entry, "published_parsed", None) or getattr(entry, "updated_parsed", None)
     if st:
@@ -140,5 +163,6 @@ def entry_to_article(entry: Any, base_domain: str) -> Article:
         category=_category(entry),
         published_at=_published_dt(entry),
         social_summary=social_summary,
+        image_url=_image_url(entry, base_domain),
         source="Bergfrid",
     )

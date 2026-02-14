@@ -91,45 +91,74 @@ class TelegramPublisher:
         log.error("Telegram: echec apres %d tentatives.", self.max_retries)
         return False
 
+    def _build_caption(self, article: Article, url: str, use_photo: bool) -> str:
+        """Build message text / photo caption."""
+        emoji = determine_importance_emoji(article.summary)
+
+        # Photo captions limited to 1024 chars
+        max_summary = 700 if use_photo else self.summary_max
+        pretty = prettify_summary(
+            article.summary, max_summary, prefix="", max_paragraphs=4
+        )
+
+        parts = [f"{emoji} <b>{htmlmod.escape(article.title)}</b>"]
+        parts.append("")
+        parts.append(htmlmod.escape(pretty))
+
+        # Meta line: category + date
+        meta_bits = []
+        if article.category:
+            meta_bits.append(article.category)
+        if article.published_at:
+            meta_bits.append(article.published_at.strftime("%d %b %Y"))
+        if meta_bits:
+            parts.append("")
+            parts.append(f"<i>{htmlmod.escape(' \u00b7 '.join(meta_bits))}</i>")
+
+        # Hashtags
+        if article.tags:
+            parts.append("")
+            parts.append(" ".join(article.tags[:6]))
+
+        text = "\n".join(parts).strip()
+
+        # Telegram caption limit = 1024
+        if use_photo and len(text) > 1024:
+            text = text[:1021] + "..."
+
+        return text
+
     async def publish(self, article: Article, cfg: Dict[str, Any]) -> bool:
         try:
             url = add_utm(article.url, source="telegram", medium="social", campaign="rss")
-            emoji = determine_importance_emoji(article.summary)
+            use_photo = bool(article.image_url)
+            text = self._build_caption(article, url, use_photo)
 
-            # Clean summary: no prefix, 4 paragraphs max
-            pretty = prettify_summary(
-                article.summary, self.summary_max, prefix="", max_paragraphs=4
-            )
+            # Inline button "Lire l'article"
+            reply_markup = json.dumps({
+                "inline_keyboard": [[
+                    {"text": "\U0001f4d6 Lire l'article", "url": url}
+                ]]
+            })
 
-            # --- Build message ---
-            parts = [f"{emoji} <b>{htmlmod.escape(article.title)}</b>"]
-
-            parts.append("")
-            parts.append(htmlmod.escape(pretty))
-
-            # Meta line: category + date
-            meta_bits = []
-            if article.category:
-                meta_bits.append(article.category)
-            if article.published_at:
-                meta_bits.append(article.published_at.strftime("%d %b %Y"))
-            if meta_bits:
-                parts.append("")
-                parts.append(f"<i>{htmlmod.escape(' \u00b7 '.join(meta_bits))}</i>")
-
-            # Link CTA (last)
-            parts.append("")
-            parts.append(f"\u2192 <a href='{htmlmod.escape(url)}'>Lire l'article</a>")
-
-            text = "\n".join(parts).strip()
-
-            endpoint = f"https://api.telegram.org/bot{self.token}/sendMessage"
-            payload = {
-                "chat_id": self.chat_id,
-                "text": text,
-                "parse_mode": "HTML",
-                "disable_web_page_preview": False,
-            }
+            if use_photo:
+                endpoint = f"https://api.telegram.org/bot{self.token}/sendPhoto"
+                payload = {
+                    "chat_id": self.chat_id,
+                    "photo": article.image_url,
+                    "caption": text,
+                    "parse_mode": "HTML",
+                    "reply_markup": reply_markup,
+                }
+            else:
+                endpoint = f"https://api.telegram.org/bot{self.token}/sendMessage"
+                payload = {
+                    "chat_id": self.chat_id,
+                    "text": text,
+                    "parse_mode": "HTML",
+                    "disable_web_page_preview": False,
+                    "reply_markup": reply_markup,
+                }
 
             ok = await self._send_with_retry(endpoint, payload)
             if ok:

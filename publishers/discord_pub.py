@@ -53,12 +53,20 @@ class DiscordPublisher:
                 article.summary, self.summary_max, prefix="", max_paragraphs=4
             )
 
+            # Append hashtags to description
+            if article.tags:
+                hashtag_line = " ".join(article.tags[:6])
+                desc = f"{desc}\n\n{hashtag_line}"
+
             embed = discord.Embed(
                 title=truncate_text(f"{emoji} {article.title}", 256),
                 url=url,
                 description=desc,
                 color=DISCORD_EMBED_COLOR,
             )
+
+            if article.image_url:
+                embed.set_image(url=article.image_url)
 
             # Footer: category + date (compact, elegant)
             footer_parts = []

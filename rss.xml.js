@@ -32,6 +32,18 @@ export async function GET() {
         return t;
     };
 
+    // Helper pour convertir un tag en hashtag propre (PascalCase, sans accents, sans espaces)
+    const toHashtag = (tag) => {
+        const cleaned = tag
+            .normalize('NFD').replace(/[\u0300-\u036f]/g, '') // supprime accents
+            .split(/[\s''-]+/) // découpe par espaces, apostrophes, tirets
+            .filter(Boolean)
+            .map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()) // PascalCase
+            .join('')
+            .replace(/[^a-zA-Z0-9]/g, ''); // supprime tout caractère spécial restant
+        return cleaned ? '#' + cleaned : '';
+    };
+
     // Helper pour extraire un résumé du contenu HTML
     const extractSummary = (content, maxLength = 280) => {
         if (!content) return '';
@@ -90,20 +102,23 @@ export async function GET() {
                 }
             }) : '';
 
-            // Tags et catégories
+            // Tags, catégories et hashtags pour les bots sociaux
             const tags = Array.isArray(post.tags) ? post.tags : [];
             const primaryCategory = post.map || tags[0] || 'Géopolitique';
+            const hashtags = tags.map(toHashtag).filter(Boolean);
+            const hashtagLine = hashtags.length > 0 ? '\n\n' + hashtags.join(' ') : '';
 
             return {
                 title: t.title,
                 pubDate: new Date(post.date_created),
                 link: articleUrl,
-                description: summary,
+                description: summary + hashtagLine,
                 content: cleanContent,
                 author: author,
                 categories: [primaryCategory, ...tags],
                 customData: `
                     <guid isPermaLink="true">${articleUrl}</guid>
+                    <bergfrid:id>${post.id}</bergfrid:id>
                     <dc:creator>${author}</dc:creator>
                     <dc:date>${new Date(post.date_created).toISOString()}</dc:date>
                     ${post.date_updated ? `<dc:modified>${new Date(post.date_updated).toISOString()}</dc:modified>` : ''}
@@ -122,6 +137,7 @@ export async function GET() {
                     ` : ''}
                     ${post.map ? `<geo:country>${post.map}</geo:country>` : ''}
                     ${t.social_summary ? `<bergfrid:social_summary><![CDATA[${t.social_summary}]]></bergfrid:social_summary>` : ''}
+                    ${hashtags.length > 0 ? `<bergfrid:hashtags>${hashtags.join(' ')}</bergfrid:hashtags>` : ''}
                 `
             };
         }).filter(Boolean),
