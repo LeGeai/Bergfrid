@@ -1,6 +1,6 @@
 {
-    "enabled": ["discord", "telegram"],
-    "discord": {},
-    "telegram": {}
-  }
-  
+  "enabled": ["discord", "telegram", "twitter"],
+  "discord": {},
+  "telegram": {},
+  "twitter": {}
+}

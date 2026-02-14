@@ -13,4 +13,5 @@ class Article:
     author: str
     category: str
     published_at: Optional[datetime]  # UTC si possible
+    social_summary: str = ""  # texte court pour Twitter/réseaux sociaux
     source: str = "Bergfrid"

@@ -122,6 +122,14 @@ def entry_to_article(entry: Any, base_domain: str) -> Article:
 
     tags = extract_tags_from_terms(raw_terms)
 
+    # social_summary: custom field > description (short) > empty
+    social_raw = getattr(entry, "social_summary", None) or ""
+    if not social_raw:
+        desc = getattr(entry, "description", None) or ""
+        if desc:
+            social_raw = desc
+    social_summary = strip_html_to_text(social_raw).strip() if social_raw else ""
+
     return Article(
         id=eid,
         title=title,
@@ -131,5 +139,6 @@ def entry_to_article(entry: Any, base_domain: str) -> Article:
         author=_author(entry),
         category=_category(entry),
         published_at=_published_dt(entry),
+        social_summary=social_summary,
         source="Bergfrid",
     )

@@ -15,6 +15,12 @@ TELEGRAM_TOKEN: str = os.environ.get("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID: str = os.environ.get("TELEGRAM_CHAT_ID", "")
 DISCORD_OFFICIAL_CHANNEL_ID: int = int(os.getenv("DISCORD_NEWS_CHANNEL_ID", "1330916602425770088"))
 
+# Twitter / X
+TWITTER_API_KEY: str = os.environ.get("TWITTER_API_KEY", "")
+TWITTER_API_SECRET: str = os.environ.get("TWITTER_API_SECRET", "")
+TWITTER_ACCESS_TOKEN: str = os.environ.get("TWITTER_ACCESS_TOKEN", "")
+TWITTER_ACCESS_SECRET: str = os.environ.get("TWITTER_ACCESS_SECRET", "")
+
 # =========================
 # File paths
 # =========================
@@ -36,6 +42,7 @@ MAX_BACKLOG_POSTS_PER_TICK: int = int(os.getenv("MAX_BACKLOG_POSTS_PER_TICK", "2
 # =========================
 DISCORD_SUMMARY_MAX: int = int(os.getenv("DISCORD_SUMMARY_MAX", "2200"))
 TELEGRAM_SUMMARY_MAX: int = int(os.getenv("TELEGRAM_SUMMARY_MAX", "900"))
+TWITTER_TWEET_MAX: int = int(os.getenv("TWITTER_TWEET_MAX", "280"))
 DISCORD_SEND_DELAY_SECONDS: float = float(os.getenv("DISCORD_SEND_DELAY_SECONDS", "0.2"))
 ARTICLE_PUBLISH_DELAY_SECONDS: float = float(os.getenv("ARTICLE_PUBLISH_DELAY_SECONDS", "30"))
 SENT_RING_MAX: int = int(os.getenv("SENT_RING_MAX", "250"))
@@ -84,6 +91,10 @@ def validate_required_env() -> None:
         raise EnvironmentError(
             f"Variables d'environnement requises manquantes: {', '.join(missing)}"
         )
+    # Twitter: warn if enabled but missing keys
+    twitter_vars = [TWITTER_API_KEY, TWITTER_API_SECRET, TWITTER_ACCESS_TOKEN, TWITTER_ACCESS_SECRET]
+    if any(twitter_vars) and not all(twitter_vars):
+        log.warning("Twitter partiellement configure: certaines cles manquent.")
 
 
 def load_targets() -> dict:
@@ -96,6 +107,7 @@ def load_targets() -> dict:
         data.setdefault("enabled", ["discord", "telegram"])
         data.setdefault("discord", {})
         data.setdefault("telegram", {})
+        data.setdefault("twitter", {})
         return data
     except FileNotFoundError:
         log.warning("Fichier %s introuvable, valeurs par defaut.", TARGETS_FILE)

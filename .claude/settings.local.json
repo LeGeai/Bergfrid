@@ -8,7 +8,12 @@
       "Bash(python -c:*)",
       "Bash(git pull:*)",
       "Bash(git add:*)",
-      "Bash(git commit:*)"
+      "Bash(git commit:*)",
+      "WebFetch(domain:medium.com)",
+      "WebFetch(domain:elfsight.com)",
+      "WebFetch(domain:communalytic.org)",
+      "WebFetch(domain:bika.ai)",
+      "WebFetch(domain:bergfrid.com)"
     ]
   }
 }
