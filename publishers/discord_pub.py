@@ -46,7 +46,6 @@ class DiscordPublisher:
     async def publish(self, article: Article, cfg: Dict[str, Any]) -> bool:
         try:
             url = add_utm(article.url, source="discord", medium="social", campaign="rss")
-            tags_str = " ".join(article.tags)
             emoji = determine_importance_emoji(article.summary)
 
             # Clean summary: no prefix, 4 paragraphs max
@@ -54,26 +53,21 @@ class DiscordPublisher:
                 article.summary, self.summary_max, prefix="", max_paragraphs=4
             )
 
-            # Append tags at end of description if they fit
-            if tags_str:
-                candidate = f"{desc}\n\n{tags_str}"
-                if len(candidate) <= self.summary_max:
-                    desc = candidate
-
             embed = discord.Embed(
-                title=truncate_text(article.title, 256),
+                title=truncate_text(f"{emoji} {article.title}", 256),
                 url=url,
                 description=desc,
                 color=DISCORD_EMBED_COLOR,
             )
 
-            # Footer: author + category (date handled by embed.timestamp)
-            footer_parts = ["Bergfrid"]
-            if article.author:
-                footer_parts.append(article.author)
+            # Footer: category + date (compact, elegant)
+            footer_parts = []
             if article.category:
                 footer_parts.append(article.category)
-            embed.set_footer(text=" \u00b7 ".join(footer_parts))
+            if article.author:
+                footer_parts.append(article.author)
+            if footer_parts:
+                embed.set_footer(text=" \u00b7 ".join(footer_parts))
 
             if article.published_at:
                 embed.timestamp = article.published_at
@@ -88,7 +82,7 @@ class DiscordPublisher:
                     fail_count += 1
                     continue
                 try:
-                    await ch.send(content=f"{emoji}", embed=embed)
+                    await ch.send(embed=embed)
                     sent_count += 1
                 except discord.Forbidden:
                     log.warning("Permission refusee pour envoyer dans le canal %d.", cid)

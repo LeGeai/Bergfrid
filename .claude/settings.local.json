@@ -5,7 +5,10 @@
       "Bash(pip install:*)",
       "Bash(python -m pytest:*)",
       "Bash(DISCORD_TOKEN=test TELEGRAM_TOKEN=test TELEGRAM_CHAT_ID=test python:*)",
-      "Bash(python -c:*)"
+      "Bash(python -c:*)",
+      "Bash(git pull:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)"
     ]
   }
 }

@@ -95,7 +95,6 @@ class TelegramPublisher:
         try:
             url = add_utm(article.url, source="telegram", medium="social", campaign="rss")
             emoji = determine_importance_emoji(article.summary)
-            tags_str = " ".join(article.tags)
 
             # Clean summary: no prefix, 4 paragraphs max
             pretty = prettify_summary(
@@ -103,32 +102,24 @@ class TelegramPublisher:
             )
 
             # --- Build message ---
-            # Line 1: emoji + title (bold, hero element)
             parts = [f"{emoji} <b>{htmlmod.escape(article.title)}</b>"]
 
-            # Blank line + clean summary
             parts.append("")
             parts.append(htmlmod.escape(pretty))
 
-            # Blank line + link CTA
-            parts.append("")
-            parts.append(f"<a href='{htmlmod.escape(url)}'>Lire sur Bergfrid \u2192</a>")
-
-            # Meta: author + category + date (compact, on one line)
+            # Meta line: category + date
             meta_bits = []
-            if article.author:
-                meta_bits.append(article.author)
             if article.category:
                 meta_bits.append(article.category)
             if article.published_at:
                 meta_bits.append(article.published_at.strftime("%d %b %Y"))
             if meta_bits:
-                meta_line = " \u00b7 ".join(meta_bits)
-                parts.append(f"<i>{htmlmod.escape(meta_line)}</i>")
+                parts.append("")
+                parts.append(f"<i>{htmlmod.escape(' \u00b7 '.join(meta_bits))}</i>")
 
-            # Tags (last line, no wrapping)
-            if tags_str:
-                parts.append(htmlmod.escape(tags_str))
+            # Link CTA (last)
+            parts.append("")
+            parts.append(f"\u2192 <a href='{htmlmod.escape(url)}'>Lire l'article</a>")
 
             text = "\n".join(parts).strip()
 
