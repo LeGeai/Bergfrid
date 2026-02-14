@@ -77,15 +77,30 @@ telegram_pub = TelegramPublisher(
     retry_base_delay=PUBLISH_RETRY_BASE_DELAY,
 )
 
-twitter_pub = TwitterPublisher(
-    api_key=TWITTER_API_KEY,
-    api_secret=TWITTER_API_SECRET,
-    access_token=TWITTER_ACCESS_TOKEN,
-    access_secret=TWITTER_ACCESS_SECRET,
-    tweet_max=TWITTER_TWEET_MAX,
-    max_retries=PUBLISH_MAX_RETRIES,
-    retry_base_delay=PUBLISH_RETRY_BASE_DELAY,
-) if all([TWITTER_API_KEY, TWITTER_API_SECRET, TWITTER_ACCESS_TOKEN, TWITTER_ACCESS_SECRET]) else None
+_twitter_keys = [TWITTER_API_KEY, TWITTER_API_SECRET, TWITTER_ACCESS_TOKEN, TWITTER_ACCESS_SECRET]
+if all(_twitter_keys):
+    twitter_pub = TwitterPublisher(
+        api_key=TWITTER_API_KEY,
+        api_secret=TWITTER_API_SECRET,
+        access_token=TWITTER_ACCESS_TOKEN,
+        access_secret=TWITTER_ACCESS_SECRET,
+        tweet_max=TWITTER_TWEET_MAX,
+        max_retries=PUBLISH_MAX_RETRIES,
+        retry_base_delay=PUBLISH_RETRY_BASE_DELAY,
+    )
+    log.info("Twitter publisher: ACTIVE (4 cles configurees).")
+else:
+    twitter_pub = None
+    missing = []
+    if not TWITTER_API_KEY:
+        missing.append("TWITTER_API_KEY")
+    if not TWITTER_API_SECRET:
+        missing.append("TWITTER_API_SECRET")
+    if not TWITTER_ACCESS_TOKEN:
+        missing.append("TWITTER_ACCESS_TOKEN")
+    if not TWITTER_ACCESS_SECRET:
+        missing.append("TWITTER_ACCESS_SECRET")
+    log.warning("Twitter publisher: DESACTIVE. Variables manquantes: %s", ", ".join(missing))
 
 health = HealthMonitor(alert_threshold=FAILURE_ALERT_THRESHOLD)
 

@@ -32,7 +32,7 @@ class StateStore:
             "last_id": None,
             "etag": None,
             "modified": None,
-            "sent": {"discord": [], "telegram": []},
+            "sent": {"discord": [], "telegram": [], "twitter": []},
         }
 
     def load(self) -> Dict[str, Any]:
@@ -50,6 +50,7 @@ class StateStore:
             data.setdefault("sent", {"discord": [], "telegram": []})
             data["sent"].setdefault("discord", [])
             data["sent"].setdefault("telegram", [])
+            data["sent"].setdefault("twitter", [])
             return data
         except json.JSONDecodeError as e:
             log.error("Fichier state %s corrompu (JSON invalide): %s. Reinitialisation.", self.path, e)
@@ -60,7 +61,7 @@ class StateStore:
 
     def save(self, state: Dict[str, Any]) -> None:
         sent = state.get("sent", {})
-        for k in ("discord", "telegram"):
+        for k in ("discord", "telegram", "twitter"):
             lst = sent.get(k, [])
             if isinstance(lst, list) and len(lst) > self.sent_ring_max:
                 sent[k] = lst[-self.sent_ring_max:]
