@@ -367,6 +367,7 @@ async def bergfrid_watcher():
         return
 
     if not backlog:
+        await _catchup_missing_platforms(entries, state, enabled, targets)
         return
 
     if len(backlog) > MAX_BACKLOG_POSTS_PER_TICK:
@@ -439,6 +440,57 @@ async def bergfrid_watcher():
             return
 
         if published_any:
+            await asyncio.sleep(ARTICLE_PUBLISH_DELAY_SECONDS)
+
+    # Rattrapage: plateformes qui ont manque des articles recents
+    await _catchup_missing_platforms(entries, state, enabled, targets)
+
+
+# =========================
+# CATCHUP (rattrapage par plateforme)
+# =========================
+
+CATCHUP_WINDOW = 5  # nombre d'articles recents a verifier
+
+
+async def _catchup_missing_platforms(entries, state, enabled, targets):
+    """Publie les articles recents manquants sur les plateformes en retard."""
+    publishers = {
+        "discord": discord_pub,
+        "telegram": telegram_pub,
+        "twitter": twitter_pub,
+    }
+
+    for entry in entries[:CATCHUP_WINDOW]:
+        article = entry_to_article(entry, BASE_DOMAIN)
+        eid = article.id
+
+        for platform, pub in publishers.items():
+            if platform not in enabled or pub is None:
+                continue
+            if StateStore.sent_has(state, platform, eid):
+                continue
+
+            # Seulement rattraper si au moins une autre plateforme l'a deja publie
+            sent_elsewhere = any(
+                StateStore.sent_has(state, other, eid)
+                for other in publishers if other != platform
+            )
+            if not sent_elsewhere:
+                continue
+
+            log.info("Rattrapage %s: %s", platform, article.title)
+            ok = await pub.publish(article, targets.get(platform, {}))
+            if ok:
+                state_store.sent_add(state, platform, eid)
+                mark_article_published_today(state)
+                state_store.save(state)
+                health.record_success(platform)
+            else:
+                if health.record_failure(platform):
+                    await send_alert_to_platforms(
+                        f"{platform.capitalize()} a echoue {health.get_failures(platform)} fois consecutivement."
+                    )
             await asyncio.sleep(ARTICLE_PUBLISH_DELAY_SECONDS)
 
 
