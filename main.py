@@ -222,13 +222,16 @@ async def send_telegram_text(text: str, parse_mode: str = "HTML", disable_previe
 
 
 async def send_alert_to_platforms(message: str) -> None:
-    """Send an alert message to all enabled platforms."""
-    targets = load_targets()
-    enabled = set(targets.get("enabled", []))
-    if "discord" in enabled:
-        await send_discord_text_to_targets(f"\u26a0\ufe0f **Alerte Bergfrid**: {message}")
-    if "telegram" in enabled:
-        await send_telegram_text(f"\u26a0\ufe0f <b>Alerte Bergfrid</b>: {message}")
+    """Send an alert message to the Discord log channel only."""
+    if not DISCORD_LOG_CHANNEL_ID:
+        return
+    ch = await resolve_discord_channel(DISCORD_LOG_CHANNEL_ID)
+    if not ch:
+        return
+    try:
+        await ch.send(f"\u26a0\ufe0f **Alerte**: {message}")
+    except Exception as e:
+        log.warning("Erreur envoi alerte dans le canal de logs: %s", e)
 
 
 def _today_str() -> str:

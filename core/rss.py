@@ -4,6 +4,8 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 from urllib.parse import urljoin
 
+import re
+
 import feedparser
 
 from core.models import Article
@@ -152,6 +154,8 @@ def entry_to_article(entry: Any, base_domain: str) -> Article:
         if desc:
             social_raw = desc
     social_summary = strip_html_to_text(social_raw).strip() if social_raw else ""
+    # Strip trailing hashtag block from description fallback (avoid duplication with tags)
+    social_summary = re.sub(r'(\s*#\w+)+\s*$', '', social_summary).strip()
 
     return Article(
         id=eid,

@@ -101,12 +101,18 @@ class BlueskyPublisher:
             )
         )
 
+    def _re_login(self) -> bool:
+        """Force a fresh login (session expired)."""
+        self._client = None
+        return self._ensure_client() is not None
+
     def _post_skeet(self, text: str, embed) -> bool:
         """Synchronous post (called via to_thread)."""
         client = self._ensure_client()
         if client is None:
             return False
 
+        _relogged = False
         for attempt in range(1, self.max_retries + 1):
             try:
                 resp = client.send_post(text=text, embed=embed)
@@ -116,6 +122,21 @@ class BlueskyPublisher:
                 return False
             except Exception as e:
                 err_str = str(e).lower()
+
+                # Auth / session expired -> re-login once
+                if not _relogged and (
+                    "auth" in err_str or "expired" in err_str
+                    or "invalid" in err_str or "401" in err_str
+                ):
+                    log.warning("Bluesky: session expiree, re-login...")
+                    if self._re_login():
+                        _relogged = True
+                        client = self._client
+                        continue
+                    else:
+                        log.error("Bluesky: echec re-login.")
+                        return False
+
                 if "rate" in err_str or "limit" in err_str or "429" in err_str:
                     delay = self.retry_base_delay * (2 ** (attempt - 1))
                     log.warning(

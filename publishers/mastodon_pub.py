@@ -1,6 +1,7 @@
 import asyncio
 import logging
-from typing import Dict, Any
+import urllib.request
+from typing import Dict, Any, Optional
 
 from core.models import Article
 from core.utils import determine_importance_emoji, truncate_text, add_utm
@@ -56,7 +57,36 @@ class MastodonPublisher:
             return f"{text}\n\n{hashtag_line}\n{url}"
         return f"{text}\n{url}"
 
-    def _post_status(self, text: str) -> bool:
+    def _upload_image(self, image_url: str) -> Optional[dict]:
+        """Download article image and upload to Mastodon as media attachment."""
+        client = self._ensure_client()
+        if not client:
+            return None
+        try:
+            req = urllib.request.Request(
+                image_url, headers={"User-Agent": "Bergfrid-Bot/1.0"}
+            )
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                data = resp.read()
+                content_type = resp.headers.get("Content-Type", "image/jpeg")
+
+            # Mastodon.py media_post accepts file-like or bytes via file_name
+            import tempfile
+            import os
+            ext = ".jpg" if "jpeg" in content_type else ".png"
+            with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as tmp:
+                tmp.write(data)
+                tmp_path = tmp.name
+            try:
+                media = client.media_post(tmp_path, mime_type=content_type)
+                return media
+            finally:
+                os.unlink(tmp_path)
+        except Exception as e:
+            log.warning("Mastodon: echec upload image: %s", e)
+            return None
+
+    def _post_status(self, text: str, media_ids: Optional[list] = None) -> bool:
         """Synchronous post (called via to_thread)."""
         client = self._ensure_client()
         if client is None:
@@ -66,7 +96,9 @@ class MastodonPublisher:
 
         for attempt in range(1, self.max_retries + 1):
             try:
-                resp = client.status_post(text, visibility="public")
+                resp = client.status_post(
+                    text, visibility="public", media_ids=media_ids
+                )
                 if resp and resp.get("id"):
                     return True
                 log.warning("Mastodon: reponse inattendue: %s", resp)
@@ -101,7 +133,14 @@ class MastodonPublisher:
     async def publish(self, article: Article, cfg: Dict[str, Any]) -> bool:
         try:
             text = self._build_post(article)
-            ok = await asyncio.to_thread(self._post_status, text)
+
+            media_ids = None
+            if article.image_url:
+                media = await asyncio.to_thread(self._upload_image, article.image_url)
+                if media:
+                    media_ids = [media["id"]]
+
+            ok = await asyncio.to_thread(self._post_status, text, media_ids)
             if ok:
                 log.info("Mastodon: publie '%s'.", article.title[:60])
             else:
