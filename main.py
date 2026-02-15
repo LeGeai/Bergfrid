@@ -7,7 +7,7 @@ from discord.ext import commands, tasks
 
 from core.config import (
     DISCORD_TOKEN, TELEGRAM_TOKEN, TELEGRAM_CHAT_ID,
-    DISCORD_OFFICIAL_CHANNEL_ID,
+    DISCORD_OFFICIAL_CHANNEL_ID, DISCORD_LOG_CHANNEL_ID,
     DISCORD_SUMMARY_MAX, TELEGRAM_SUMMARY_MAX, TWITTER_TWEET_MAX,
     MASTODON_POST_MAX, BLUESKY_POST_MAX,
     DISCORD_SEND_DELAY_SECONDS,
@@ -160,6 +160,28 @@ async def resolve_discord_channel(cid: int):
         return None
 
 
+async def send_publish_log(article_title: str, results: dict) -> None:
+    """Send a publication status summary to the Discord log channel."""
+    if not DISCORD_LOG_CHANNEL_ID:
+        return
+    ch = await resolve_discord_channel(DISCORD_LOG_CHANNEL_ID)
+    if not ch:
+        return
+
+    lines = [f"\U0001f4cb **{article_title}**"]
+    for platform in ("discord", "telegram", "mastodon", "bluesky"):
+        status = results.get(platform)
+        if status is None:
+            continue  # not enabled / not attempted
+        icon = "\u2705" if status else "\u274c"
+        lines.append(f"{icon} {platform.capitalize()}")
+
+    try:
+        await ch.send("\n".join(lines))
+    except Exception as e:
+        log.warning("Erreur envoi log publication: %s", e)
+
+
 async def send_discord_text_to_targets(text: str) -> None:
     for cid in get_all_discord_target_channel_ids():
         ch = await resolve_discord_channel(cid)
@@ -241,14 +263,6 @@ def build_night_promo_telegram() -> str:
     )
 
 
-def build_reboot_notice_discord() -> str:
-    return "\U0001f504 *Mise \u00e0 jour effectu\u00e9e.*"
-
-
-def build_reboot_notice_telegram() -> str:
-    return "\U0001f504 <i>Mise \u00e0 jour effectu\u00e9e.</i>"
-
-
 # =========================
 # REBOOT NOTICE
 # =========================
@@ -266,18 +280,18 @@ async def send_reboot_notice_if_needed():
         log.info("Reboot/maj notice: skip (cooldown).")
         return
 
-    targets = load_targets()
-    enabled = set(targets.get("enabled", ["discord", "telegram"]))
-
-    if "discord" in enabled:
-        await send_discord_text_to_targets(build_reboot_notice_discord())
-
-    if "telegram" in enabled:
-        await send_telegram_text(build_reboot_notice_telegram(), disable_preview=True)
+    # Envoyer uniquement dans le canal de logs Discord
+    if DISCORD_LOG_CHANNEL_ID:
+        ch = await resolve_discord_channel(DISCORD_LOG_CHANNEL_ID)
+        if ch:
+            try:
+                await ch.send("\U0001f504 **Mise \u00e0 jour effectu\u00e9e.**")
+            except Exception as e:
+                log.warning("Erreur envoi reboot notice dans le canal de logs: %s", e)
 
     state["last_reboot_notice_ts"] = _utc_ts()
     state_store.save(state)
-    log.info("Reboot/maj notice: sent.")
+    log.info("Reboot/maj notice: sent (log channel).")
 
 
 # =========================
@@ -363,11 +377,13 @@ async def bergfrid_watcher():
         eid = article.id
         published_any = False
         all_ok = True
+        pub_results = {}  # platform -> True/False
 
         # Discord
         if "discord" in enabled and not StateStore.sent_has(state, "discord", eid):
             log.info("Publication Discord: %s", article.title)
             discord_ok = await discord_pub.publish(article, targets.get("discord", {}))
+            pub_results["discord"] = discord_ok
             if discord_ok:
                 published_any = True
                 state_store.sent_add(state, "discord", eid)
@@ -385,6 +401,7 @@ async def bergfrid_watcher():
         if "telegram" in enabled and not StateStore.sent_has(state, "telegram", eid):
             log.info("Publication Telegram: %s", article.title)
             telegram_ok = await telegram_pub.publish(article, targets.get("telegram", {}))
+            pub_results["telegram"] = telegram_ok
             if telegram_ok:
                 published_any = True
                 state_store.sent_add(state, "telegram", eid)
@@ -403,6 +420,7 @@ async def bergfrid_watcher():
             if platform in enabled and not StateStore.sent_has(state, platform, eid):
                 log.info("Publication %s: %s", platform, article.title)
                 plat_ok = await pub.publish(article, targets.get(platform, {}))
+                pub_results[platform] = plat_ok
                 if plat_ok:
                     published_any = True
                     state_store.sent_add(state, platform, eid)
@@ -415,6 +433,10 @@ async def bergfrid_watcher():
                         await send_alert_to_platforms(
                             f"{platform.capitalize()} a echoue {health.get_failures(platform)} fois consecutivement."
                         )
+
+        # Log de publication sur Discord
+        if pub_results:
+            await send_publish_log(article.title, pub_results)
 
         if all_ok:
             state["last_id"] = eid
@@ -472,6 +494,7 @@ async def _catchup_missing_platforms(entries, state, enabled, targets):
                     await send_alert_to_platforms(
                         f"{platform.capitalize()} a echoue {health.get_failures(platform)} fois consecutivement."
                     )
+            await send_publish_log(article.title, {platform: ok})
             await asyncio.sleep(ARTICLE_PUBLISH_DELAY_SECONDS)
 
 
