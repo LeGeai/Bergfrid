@@ -701,6 +701,8 @@ async def preview_message(ctx: commands.Context, nom: str = ""):
         await ctx.send("\u26d4 Cette commande n'est disponible que dans le canal de logs.")
         return
 
+    nom = nom.strip().lower()
+
     # Article-based previews
     if nom in ("x", "article"):
         state = state_store.load()
@@ -712,11 +714,37 @@ async def preview_message(ctx: commands.Context, nom: str = ""):
         article = entry_to_article(entries[0], BASE_DOMAIN)
 
         if nom == "x":
-            # Twitter draft format
-            await ctx.send("\U0001f50d **Preview : Dernier article (format Twitter/X)**\n\u2500\u2500\u2500")
-            await send_twitter_draft(article)
+            from core.utils import determine_importance_emoji, truncate_text, add_utm
+            emoji = determine_importance_emoji(article.summary)
+            url = add_utm(article.url, source="twitter", medium="social", campaign="rss")
+            parts = [f"{emoji} {article.title}"]
+            if article.social_summary:
+                parts.append("")
+                parts.append(article.social_summary)
+            if article.tags:
+                parts.append("")
+                parts.append(" ".join(article.tags[:5]))
+            parts.append("")
+            parts.append(url)
+            tweet = "\n".join(parts)
+            if len(tweet) > 280:
+                budget = 280 - len(f"{emoji} {article.title}") - 23 - 4
+                tag_line = " ".join(article.tags[:5]) if article.tags else ""
+                if tag_line:
+                    budget -= len(tag_line) - 2
+                summary = truncate_text(article.social_summary, max(0, budget))
+                parts = [f"{emoji} {article.title}"]
+                if summary:
+                    parts.append("")
+                    parts.append(summary)
+                if tag_line:
+                    parts.append("")
+                    parts.append(tag_line)
+                parts.append("")
+                parts.append(url)
+                tweet = "\n".join(parts)
+            await ctx.send(f"\U0001f50d **Preview : Dernier article (format Twitter/X)**\n\u2500\u2500\u2500\n```\n{tweet}\n```")
         else:
-            # Discord embed format
             from core.utils import determine_importance_emoji, prettify_summary, truncate_text, add_utm
             url = add_utm(article.url, source="discord", medium="social", campaign="rss")
             emoji = determine_importance_emoji(article.summary)
