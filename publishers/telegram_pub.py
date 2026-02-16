@@ -37,17 +37,24 @@ class TelegramPublisher:
         if self._session and not self._session.closed:
             await self._session.close()
 
-    async def _send_with_retry(self, endpoint: str, payload: dict) -> bool:
-        """Send a Telegram API request with retry on 429 and 5xx."""
+    async def _send_with_retry(self, endpoint: str, payload: dict) -> Optional[int]:
+        """Send a Telegram API request with retry on 429 and 5xx.
+
+        Returns the message_id on success, None on failure.
+        """
         sess = await self._ensure_session()
         if sess is None:
-            return False
+            return None
 
         for attempt in range(1, self.max_retries + 1):
             try:
                 async with sess.post(endpoint, data=payload) as resp:
                     if resp.status == 200:
-                        return True
+                        try:
+                            data = json.loads(await resp.text())
+                            return data.get("result", {}).get("message_id")
+                        except Exception:
+                            return -1  # success but could not parse id
 
                     body = await resp.text()
 
@@ -75,7 +82,7 @@ class TelegramPublisher:
 
                     # 4xx (sauf 429) = erreur client, pas de retry
                     log.error("Telegram erreur client %d: %s", resp.status, body[:600])
-                    return False
+                    return None
 
             except asyncio.TimeoutError:
                 log.warning("Telegram timeout (tentative %d/%d).", attempt, self.max_retries)
@@ -89,7 +96,28 @@ class TelegramPublisher:
                 continue
 
         log.error("Telegram: echec apres %d tentatives.", self.max_retries)
-        return False
+        return None
+
+    async def set_reaction(self, message_id: int, emoji: str) -> None:
+        """Set a reaction on a Telegram message."""
+        if not message_id or message_id < 0:
+            return
+        sess = await self._ensure_session()
+        if sess is None:
+            return
+        endpoint = f"https://api.telegram.org/bot{self.token}/setMessageReaction"
+        payload = {
+            "chat_id": self.chat_id,
+            "message_id": message_id,
+            "reaction": json.dumps([{"type": "emoji", "emoji": emoji}]),
+        }
+        try:
+            async with sess.post(endpoint, data=payload) as resp:
+                if resp.status != 200:
+                    body = await resp.text()
+                    log.warning("Telegram setReaction erreur %d: %s", resp.status, body[:300])
+        except Exception as e:
+            log.warning("Telegram setReaction exception: %s", e)
 
     def _build_caption(self, article: Article, url: str, use_photo: bool) -> str:
         """Build message text / photo caption."""
@@ -160,12 +188,14 @@ class TelegramPublisher:
                     "reply_markup": reply_markup,
                 }
 
-            ok = await self._send_with_retry(endpoint, payload)
-            if ok:
+            msg_id = await self._send_with_retry(endpoint, payload)
+            if msg_id is not None:
                 log.info("Telegram: publie '%s'.", article.title[:60])
+                await self.set_reaction(msg_id, "\U0001f44d")
+                return True
             else:
                 log.error("Telegram: echec publication '%s'.", article.title[:60])
-            return ok
+                return False
 
         except Exception as e:
             log.exception("Erreur inattendue publication Telegram: %s", e)

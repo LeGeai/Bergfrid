@@ -92,6 +92,11 @@ class DiscordPublisher:
                 try:
                     msg = await ch.send(embed=embed)
                     sent_count += 1
+                    # Add thumbs up reaction to encourage interaction
+                    try:
+                        await msg.add_reaction("\U0001f44d")
+                    except Exception:
+                        pass
                     # Create a discussion thread under the article
                     try:
                         thread_name = article.title[:100] if len(article.title) > 100 else article.title

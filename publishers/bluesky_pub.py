@@ -106,20 +106,20 @@ class BlueskyPublisher:
         self._client = None
         return self._ensure_client() is not None
 
-    def _post_skeet(self, text: str, embed) -> bool:
-        """Synchronous post (called via to_thread)."""
+    def _post_skeet(self, text: str, embed):
+        """Synchronous post (called via to_thread). Returns response or None."""
         client = self._ensure_client()
         if client is None:
-            return False
+            return None
 
         _relogged = False
         for attempt in range(1, self.max_retries + 1):
             try:
                 resp = client.send_post(text=text, embed=embed)
                 if resp and resp.uri:
-                    return True
+                    return resp
                 log.warning("Bluesky: reponse inattendue: %s", resp)
-                return False
+                return None
             except Exception as e:
                 err_str = str(e).lower()
 
@@ -159,21 +159,33 @@ class BlueskyPublisher:
                     continue
                 else:
                     log.error("Bluesky erreur API (tentative %d/%d): %s", attempt, self.max_retries, e)
-                    return False
+                    return None
 
         log.error("Bluesky: echec apres %d tentatives.", self.max_retries)
-        return False
+        return None
+
+    def _like_post(self, uri: str, cid: str) -> None:
+        """Like own post to encourage interaction."""
+        client = self._ensure_client()
+        if not client:
+            return
+        try:
+            client.like(uri=uri, cid=cid)
+        except Exception as e:
+            log.warning("Bluesky: echec like post: %s", e)
 
     async def publish(self, article: Article, cfg: Dict[str, Any]) -> bool:
         try:
             text = self._build_post_text(article)
             embed = self._build_embed(article)
-            ok = await asyncio.to_thread(self._post_skeet, text, embed)
-            if ok:
+            resp = await asyncio.to_thread(self._post_skeet, text, embed)
+            if resp:
                 log.info("Bluesky: publie '%s'.", article.title[:60])
+                await asyncio.to_thread(self._like_post, resp.uri, resp.cid)
+                return True
             else:
                 log.error("Bluesky: echec publication '%s'.", article.title[:60])
-            return ok
+                return False
         except Exception as e:
             log.exception("Erreur inattendue publication Bluesky: %s", e)
             return False

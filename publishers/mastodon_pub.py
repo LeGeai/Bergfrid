@@ -86,11 +86,11 @@ class MastodonPublisher:
             log.warning("Mastodon: echec upload image: %s", e)
             return None
 
-    def _post_status(self, text: str, media_ids: Optional[list] = None) -> bool:
-        """Synchronous post (called via to_thread)."""
+    def _post_status(self, text: str, media_ids: Optional[list] = None) -> Optional[dict]:
+        """Synchronous post (called via to_thread). Returns status dict or None."""
         client = self._ensure_client()
         if client is None:
-            return False
+            return None
 
         from mastodon import MastodonError, MastodonRatelimitError, MastodonServerError
 
@@ -100,9 +100,9 @@ class MastodonPublisher:
                     text, visibility="public", media_ids=media_ids
                 )
                 if resp and resp.get("id"):
-                    return True
+                    return resp
                 log.warning("Mastodon: reponse inattendue: %s", resp)
-                return False
+                return None
             except MastodonRatelimitError:
                 delay = self.retry_base_delay * (2 ** (attempt - 1))
                 log.warning(
@@ -125,10 +125,20 @@ class MastodonPublisher:
                 continue
             except MastodonError as e:
                 log.error("Mastodon erreur API (tentative %d/%d): %s", attempt, self.max_retries, e)
-                return False
+                return None
 
         log.error("Mastodon: echec apres %d tentatives.", self.max_retries)
-        return False
+        return None
+
+    def _favourite_status(self, status_id) -> None:
+        """Like own post to encourage interaction."""
+        client = self._ensure_client()
+        if not client:
+            return
+        try:
+            client.status_favourite(status_id)
+        except Exception as e:
+            log.warning("Mastodon: echec favori status %s: %s", status_id, e)
 
     async def publish(self, article: Article, cfg: Dict[str, Any]) -> bool:
         try:
@@ -140,12 +150,14 @@ class MastodonPublisher:
                 if media:
                     media_ids = [media["id"]]
 
-            ok = await asyncio.to_thread(self._post_status, text, media_ids)
-            if ok:
+            status = await asyncio.to_thread(self._post_status, text, media_ids)
+            if status:
                 log.info("Mastodon: publie '%s'.", article.title[:60])
+                await asyncio.to_thread(self._favourite_status, status["id"])
+                return True
             else:
                 log.error("Mastodon: echec publication '%s'.", article.title[:60])
-            return ok
+                return False
         except Exception as e:
             log.exception("Erreur inattendue publication Mastodon: %s", e)
             return False

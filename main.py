@@ -196,19 +196,25 @@ async def send_discord_text_to_targets(text: str) -> None:
         await asyncio.sleep(DISCORD_SEND_DELAY_SECONDS)
 
 
-async def send_discord_embed_to_targets(embed: discord.Embed) -> None:
+async def send_discord_embed_to_targets(embed: discord.Embed, reactions: list[str] | None = None) -> None:
     for cid in get_all_discord_target_channel_ids():
         ch = await resolve_discord_channel(cid)
         if not ch:
             continue
         try:
-            await ch.send(embed=embed)
+            msg = await ch.send(embed=embed)
+            for emoji in (reactions or []):
+                try:
+                    await msg.add_reaction(emoji)
+                except Exception:
+                    pass
         except Exception as e:
             log.warning("Erreur envoi embed Discord canal %d: %s", cid, e)
         await asyncio.sleep(DISCORD_SEND_DELAY_SECONDS)
 
 
-async def send_telegram_text(text: str, parse_mode: str = "HTML", disable_preview: bool = True) -> bool:
+async def send_telegram_text(text: str, parse_mode: str = "HTML",
+                             disable_preview: bool = True, reaction: str = "") -> bool:
     if aiohttp is None:
         log.error("aiohttp non installe: impossible d'envoyer sur Telegram.")
         return False
@@ -222,13 +228,29 @@ async def send_telegram_text(text: str, parse_mode: str = "HTML", disable_previe
     }
 
     try:
+        import json as _json
         timeout = aiohttp.ClientTimeout(total=20)
         async with aiohttp.ClientSession(timeout=timeout) as sess:
             async with sess.post(endpoint, data=payload) as resp:
+                body = await resp.text()
                 if resp.status != 200:
-                    body = await resp.text()
                     log.warning("Telegram msg special erreur status=%s body=%s", resp.status, body[:600])
                     return False
+                # Set reaction if requested
+                if reaction:
+                    try:
+                        data = _json.loads(body)
+                        msg_id = data.get("result", {}).get("message_id")
+                        if msg_id:
+                            react_endpoint = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/setMessageReaction"
+                            react_payload = {
+                                "chat_id": TELEGRAM_CHAT_ID,
+                                "message_id": msg_id,
+                                "reaction": _json.dumps([{"type": "emoji", "emoji": reaction}]),
+                            }
+                            await sess.post(react_endpoint, data=react_payload)
+                    except Exception:
+                        pass
         return True
     except Exception as e:
         log.warning("Telegram msg special exception: %s", e)
@@ -714,10 +736,10 @@ async def nightly_promo():
     log.info("Nightly promo: dispatch")
 
     if "discord" in enabled:
-        await send_discord_embed_to_targets(build_night_promo_discord())
+        await send_discord_embed_to_targets(build_night_promo_discord(), reactions=["\u271d\ufe0f"])
 
     if "telegram" in enabled:
-        await send_telegram_text(build_night_promo_telegram(), disable_preview=True)
+        await send_telegram_text(build_night_promo_telegram(), disable_preview=True, reaction="\u271d\ufe0f")
 
     state["nightly_promo_sent_date"] = today
     state_store.save(state)
@@ -742,10 +764,10 @@ async def morning_message():
     log.info("Morning message: dispatch")
 
     if "discord" in enabled:
-        await send_discord_embed_to_targets(build_morning_discord())
+        await send_discord_embed_to_targets(build_morning_discord(), reactions=["\u271d\ufe0f"])
 
     if "telegram" in enabled:
-        await send_telegram_text(build_morning_telegram(), disable_preview=True)
+        await send_telegram_text(build_morning_telegram(), disable_preview=True, reaction="\u271d\ufe0f")
 
     state["morning_sent_date"] = today
     state_store.save(state)
@@ -777,7 +799,11 @@ async def angelus_task():
     log.info("Angelus: envoi (%s)", hour_label)
 
     try:
-        await ch.send(embed=build_angelus())
+        msg = await ch.send(embed=build_angelus())
+        try:
+            await msg.add_reaction("\u271d\ufe0f")
+        except Exception:
+            pass
     except Exception as e:
         log.warning("Erreur envoi Angelus: %s", e)
 
