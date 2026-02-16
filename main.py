@@ -323,7 +323,7 @@ def build_night_promo_discord() -> discord.Embed:
         "\n"
         "Nous vous souhaitons une agr\u00e9able nuit. "
         "Que Dieu vous garde et vous guide. \U0001f64f\n"
-        f"\U0001f54e [Pri\u00e8re du soir]({PRIERES_URL})"
+        f"\u271d\ufe0f [Pri\u00e8re du soir]({PRIERES_URL})"
     )
     embed = discord.Embed(
         title="\U0001f319 22h \u2014 Fin de nos publications pour la journ\u00e9e.",
@@ -348,7 +348,7 @@ def build_night_promo_telegram() -> str:
         "\n"
         "Nous vous souhaitons une agr\u00e9able nuit. "
         "Que Dieu vous garde et vous guide. \U0001f64f\n"
-        f"\U0001f54e <a href='{PRIERES_URL}'>Pri\u00e8re du soir</a>"
+        f"\u271d\ufe0f <a href='{PRIERES_URL}'>Pri\u00e8re du soir</a>"
     )
 
 
@@ -369,7 +369,7 @@ def build_morning_discord() -> discord.Embed:
         "Vous \u00eates ceux qui font vivre notre m\u00e9dia.\n"
         "\n"
         "Que Dieu veille sur votre journ\u00e9e. \U0001f64f\n"
-        f"\U0001f54e [Pri\u00e8re du jour]({PRIERES_URL})"
+        f"\u271d\ufe0f [Pri\u00e8re du jour]({PRIERES_URL})"
     )
     embed = discord.Embed(
         title="\u2600\ufe0f Bonjour \u00e0 tous !",
@@ -394,7 +394,7 @@ def build_morning_telegram() -> str:
         "Vous \u00eates ceux qui font vivre notre m\u00e9dia.\n"
         "\n"
         "Que Dieu veille sur votre journ\u00e9e. \U0001f64f\n"
-        f"\U0001f54e <a href='{PRIERES_URL}'>Pri\u00e8re du jour</a>"
+        f"\u271d\ufe0f <a href='{PRIERES_URL}'>Pri\u00e8re du jour</a>"
     )
 
 
@@ -439,10 +439,10 @@ def build_angelus() -> discord.Embed:
         "jusqu\u2019\u00e0 la gloire de la r\u00e9surrection. "
         "Par J\u00e9sus, le Christ, notre Seigneur. Amen.*\n"
         "\n"
-        f"\U0001f54e [Pri\u00e8res]({PRIERES_URL})"
+        f"\u271d\ufe0f [Pri\u00e8res]({PRIERES_URL})"
     )
     embed = discord.Embed(
-        title="\U0001f54e Ang\u00e9lus",
+        title="\u271d\ufe0f Ang\u00e9lus",
         description=desc,
         color=DISCORD_EMBED_COLOR,
     )
