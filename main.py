@@ -184,16 +184,13 @@ async def send_publish_log(article_title: str, results: dict) -> None:
         log.warning("Erreur envoi log publication: %s", e)
 
 
-async def send_discord_text_to_targets(text: str, view: discord.ui.View = None) -> None:
+async def send_discord_text_to_targets(text: str) -> None:
     for cid in get_all_discord_target_channel_ids():
         ch = await resolve_discord_channel(cid)
         if not ch:
             continue
         try:
-            kwargs = {"content": text}
-            if view is not None:
-                kwargs["view"] = view
-            await ch.send(**kwargs)
+            await ch.send(text)
         except Exception as e:
             log.warning("Erreur envoi texte Discord canal %d: %s", cid, e)
         await asyncio.sleep(DISCORD_SEND_DELAY_SECONDS)
@@ -312,19 +309,15 @@ def build_night_promo_discord() -> str:
         "Pour nous soutenir : abonnez-vous, aimez, partagez et commentez "
         "sur tous nos r\u00e9seaux sociaux \u2014 mais surtout sur notre site web.\n"
         "\n"
+        f"\U0001f310 <{PROMO_WEBSITE_URL}>\n"
+        f"\u2615 <{TIPEEE_URL}>\n"
+        "\n"
         "\u2500\u2500\u2500\n"
         "\n"
         "Nous vous souhaitons une agr\u00e9able nuit. "
-        "Que Dieu vous garde et vous guide. \U0001f64f"
+        "Que Dieu vous garde et vous guide. \U0001f64f\n"
+        f"\U0001f54e Pri\u00e8re du soir \u2192 <{PRIERES_URL}>"
     )
-
-
-def _night_buttons() -> discord.ui.View:
-    view = discord.ui.View()
-    view.add_item(discord.ui.Button(label="\U0001f54e Pri\u00e8re du soir", url=PRIERES_URL))
-    view.add_item(discord.ui.Button(label="\U0001f310 Visiter le site", url=PROMO_WEBSITE_URL))
-    view.add_item(discord.ui.Button(label="\u2615 Nous soutenir", url=TIPEEE_URL))
-    return view
 
 
 def build_night_promo_telegram() -> str:
@@ -362,14 +355,9 @@ def build_morning_discord() -> str:
         "Pensez \u00e0 nous suivre et nous soutenir ! "
         "Vous \u00eates ceux qui font vivre notre m\u00e9dia.\n"
         "\n"
-        "Que Dieu veille sur votre journ\u00e9e. \U0001f64f"
+        "Que Dieu veille sur votre journ\u00e9e. \U0001f64f\n"
+        f"\U0001f54e Pri\u00e8re du jour \u2192 <{PRIERES_URL}>"
     )
-
-
-def _morning_buttons() -> discord.ui.View:
-    view = discord.ui.View()
-    view.add_item(discord.ui.Button(label="\U0001f54e Pri\u00e8re du jour", url=PRIERES_URL))
-    return view
 
 
 def build_morning_telegram() -> str:
@@ -431,14 +419,10 @@ def build_angelus() -> str:
         "par le message de l\u2019Ange vous nous avez fait conna\u00eetre l\u2019Incarnation "
         "de votre Fils bien-aim\u00e9, conduisez-nous par sa passion et par sa croix "
         "jusqu\u2019\u00e0 la gloire de la r\u00e9surrection. "
-        "Par J\u00e9sus, le Christ, notre Seigneur. Amen.*"
+        "Par J\u00e9sus, le Christ, notre Seigneur. Amen.*\n"
+        "\n"
+        f"\U0001f54e Pri\u00e8res \u2192 <{PRIERES_URL}>"
     )
-
-
-def _angelus_buttons() -> discord.ui.View:
-    view = discord.ui.View()
-    view.add_item(discord.ui.Button(label="\U0001f54e Pri\u00e8res", url=PRIERES_URL))
-    return view
 
 
 # =========================
@@ -705,7 +689,7 @@ async def nightly_promo():
     log.info("Nightly promo: dispatch")
 
     if "discord" in enabled:
-        await send_discord_text_to_targets(build_night_promo_discord(), view=_night_buttons())
+        await send_discord_text_to_targets(build_night_promo_discord())
 
     if "telegram" in enabled:
         await send_telegram_text(build_night_promo_telegram(), disable_preview=True)
@@ -733,7 +717,7 @@ async def morning_message():
     log.info("Morning message: dispatch")
 
     if "discord" in enabled:
-        await send_discord_text_to_targets(build_morning_discord(), view=_morning_buttons())
+        await send_discord_text_to_targets(build_morning_discord())
 
     if "telegram" in enabled:
         await send_telegram_text(build_morning_telegram(), disable_preview=True)
@@ -768,7 +752,7 @@ async def angelus_task():
     log.info("Angelus: envoi (%s)", hour_label)
 
     try:
-        await ch.send(build_angelus(), view=_angelus_buttons())
+        await ch.send(build_angelus())
     except Exception as e:
         log.warning("Erreur envoi Angelus: %s", e)
 
