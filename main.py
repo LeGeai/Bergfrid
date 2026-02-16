@@ -701,6 +701,47 @@ async def preview_message(ctx: commands.Context, nom: str = ""):
         await ctx.send("\u26d4 Cette commande n'est disponible que dans le canal de logs.")
         return
 
+    # Article-based previews
+    if nom in ("x", "article"):
+        state = state_store.load()
+        feed = await parse_rss_with_cache(BERGFRID_RSS_URL, BASE_DOMAIN, state, timeout=RSS_FETCH_TIMEOUT)
+        entries = getattr(feed, "entries", None) or []
+        if not entries:
+            await ctx.send("\u26a0\ufe0f Flux RSS vide ou inaccessible.")
+            return
+        article = entry_to_article(entries[0], BASE_DOMAIN)
+
+        if nom == "x":
+            # Twitter draft format
+            await ctx.send("\U0001f50d **Preview : Dernier article (format Twitter/X)**\n\u2500\u2500\u2500")
+            await send_twitter_draft(article)
+        else:
+            # Discord embed format
+            from core.utils import determine_importance_emoji, prettify_summary, truncate_text, add_utm
+            url = add_utm(article.url, source="discord", medium="social", campaign="rss")
+            emoji = determine_importance_emoji(article.summary)
+            desc = prettify_summary(article.summary, DISCORD_SUMMARY_MAX, prefix="", max_paragraphs=4)
+            if article.tags:
+                desc = f"{desc}\n\n{' '.join(article.tags[:6])}"
+            embed = discord.Embed(
+                title=truncate_text(f"{emoji} {article.title}", 256),
+                url=url, description=desc, color=DISCORD_EMBED_COLOR,
+            )
+            if article.image_url:
+                embed.set_image(url=article.image_url)
+            footer_parts = []
+            if article.category:
+                footer_parts.append(article.category)
+            if article.author:
+                footer_parts.append(article.author)
+            if footer_parts:
+                embed.set_footer(text=" \u00b7 ".join(footer_parts))
+            if article.published_at:
+                embed.timestamp = article.published_at
+            await ctx.send("\U0001f50d **Preview : Dernier article (format Discord)**\n\u2500\u2500\u2500")
+            await ctx.send(embed=embed)
+        return
+
     previews = {
         "nuit": ("Message bonne nuit (Discord)", build_night_promo_discord()),
         "nuit-tg": ("Message bonne nuit (Telegram HTML)", build_night_promo_telegram()),
@@ -708,8 +749,8 @@ async def preview_message(ctx: commands.Context, nom: str = ""):
     }
 
     if not nom or nom not in previews:
-        noms = ", ".join(f"`{k}`" for k in previews)
-        await ctx.send(f"\U0001f4cb Messages disponibles : {noms}\nUsage : `bg!preview <nom>`")
+        all_noms = "`nuit`, `nuit-tg`, `reboot`, `x`, `article`"
+        await ctx.send(f"\U0001f4cb Messages disponibles : {all_noms}\nUsage : `bg!preview <nom>`")
         return
 
     label, content = previews[nom]
