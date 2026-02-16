@@ -90,8 +90,14 @@ class DiscordPublisher:
                     fail_count += 1
                     continue
                 try:
-                    await ch.send(embed=embed)
+                    msg = await ch.send(embed=embed)
                     sent_count += 1
+                    # Create a discussion thread under the article
+                    try:
+                        thread_name = article.title[:100] if len(article.title) > 100 else article.title
+                        await msg.create_thread(name=thread_name)
+                    except Exception as te:
+                        log.warning("Impossible de creer le fil pour canal %d: %s", cid, te)
                 except discord.Forbidden:
                     log.warning("Permission refusee pour envoyer dans le canal %d.", cid)
                     fail_count += 1
