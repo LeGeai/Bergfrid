@@ -7,7 +7,7 @@ from discord.ext import commands, tasks
 
 from core.config import (
     DISCORD_TOKEN, TELEGRAM_TOKEN, TELEGRAM_CHAT_ID,
-    DISCORD_OFFICIAL_CHANNEL_ID, DISCORD_LOG_CHANNEL_ID,
+    DISCORD_OFFICIAL_CHANNEL_ID, DISCORD_LOG_CHANNEL_ID, DISCORD_TWITTER_CHANNEL_ID, DISCORD_EMBED_COLOR,
     DISCORD_SUMMARY_MAX, TELEGRAM_SUMMARY_MAX, TWITTER_TWEET_MAX,
     MASTODON_POST_MAX, BLUESKY_POST_MAX,
     DISCORD_SEND_DELAY_SECONDS,
@@ -63,7 +63,7 @@ validate_required_env()
 intents = discord.Intents.default()
 intents.message_content = True
 intents.guilds = True
-bot = commands.Bot(command_prefix="!", intents=intents)
+bot = commands.Bot(command_prefix="bg!", intents=intents, help_command=None)
 
 state_store = StateStore(STATE_FILE, sent_ring_max=SENT_RING_MAX)
 
@@ -232,6 +232,56 @@ async def send_alert_to_platforms(message: str) -> None:
         await ch.send(f"\u26a0\ufe0f **Alerte**: {message}")
     except Exception as e:
         log.warning("Erreur envoi alerte dans le canal de logs: %s", e)
+
+
+async def send_twitter_draft(article) -> None:
+    """Send a Twitter-ready text to the dedicated Discord channel for copy-paste."""
+    if not DISCORD_TWITTER_CHANNEL_ID:
+        return
+    ch = await resolve_discord_channel(DISCORD_TWITTER_CHANNEL_ID)
+    if not ch:
+        return
+
+    from core.utils import determine_importance_emoji, truncate_text, add_utm
+    emoji = determine_importance_emoji(article.summary)
+    url = add_utm(article.url, source="twitter", medium="social", campaign="rss")
+
+    # Build tweet: emoji + title + summary + hashtags + URL
+    parts = [f"{emoji} {article.title}"]
+    if article.social_summary:
+        parts.append("")
+        parts.append(article.social_summary)
+    if article.tags:
+        parts.append("")
+        parts.append(" ".join(article.tags[:5]))
+    parts.append("")
+    parts.append(url)
+
+    tweet = "\n".join(parts)
+    # Twitter counts URLs as 23 chars; truncate summary if needed
+    if len(tweet) > 280:
+        budget = 280 - len(f"{emoji} {article.title}") - 23 - 4  # newlines
+        if article.tags:
+            tag_line = " ".join(article.tags[:5])
+            budget -= len(tag_line) - 2
+        else:
+            tag_line = ""
+        summary = truncate_text(article.social_summary, max(0, budget))
+        parts = [f"{emoji} {article.title}"]
+        if summary:
+            parts.append("")
+            parts.append(summary)
+        if tag_line:
+            parts.append("")
+            parts.append(tag_line)
+        parts.append("")
+        parts.append(url)
+        tweet = "\n".join(parts)
+
+    try:
+        await ch.send(f"```\n{tweet}\n```")
+    except Exception as e:
+        log.warning("Erreur envoi Twitter draft: %s", e)
 
 
 def _today_str() -> str:
@@ -441,6 +491,10 @@ async def bergfrid_watcher():
         if pub_results:
             await send_publish_log(article.title, pub_results)
 
+        # Twitter draft pour copier-coller
+        if published_any:
+            await send_twitter_draft(article)
+
         if all_ok:
             state["last_id"] = eid
             state_store.save(state)
@@ -598,6 +652,68 @@ async def rss_sync(ctx: commands.Context):
     state_store.save(state)
 
     await ctx.send(f"\u2705 Synchronise sur last_id={state['last_id']} (aucune publication).")
+
+
+@bot.command(name="help")
+async def help_command(ctx: commands.Context):
+    """Show available commands."""
+    embed = discord.Embed(
+        title="Bergfrid",
+        description=(
+            "Publication automatique des articles de "
+            "[bergfrid.com](https://www.bergfrid.com) "
+            "sur Discord, Telegram, Mastodon et Bluesky.\n\n"
+            "*Chaque nouvel article est relay\u00e9 ici en temps r\u00e9el.*"
+        ),
+        color=DISCORD_EMBED_COLOR,
+    )
+
+    embed.add_field(
+        name="\u2500\u2500\u2500  Commandes  \u2500\u2500\u2500",
+        value="`bg!help` \u2500 Affiche cette aide",
+        inline=False,
+    )
+
+    # Admin commands: show only if user has manage_channels
+    is_admin = ctx.channel.permissions_for(ctx.author).manage_channels if ctx.guild else False
+    if is_admin:
+        admin_cmds = (
+            "`bg!setnews [#canal]` \u2500 D\u00e9finir le canal de publication\n"
+            "`bg!unsetnews` \u2500 Retirer le canal de publication\n"
+            "`bg!rsssync` \u2500 Synchroniser l'\u00e9tat RSS\n"
+            "`bg!preview <nom>` \u2500 Pr\u00e9visualiser un message *(canal log)*"
+        )
+        embed.add_field(
+            name="\u2500\u2500\u2500  Administration  \u2500\u2500\u2500",
+            value=admin_cmds,
+            inline=False,
+        )
+
+    embed.set_footer(text="bergfrid.com \u2014 M\u00e9dia ind\u00e9pendant")
+    await ctx.send(embed=embed)
+
+
+@bot.command(name="preview")
+@commands.has_permissions(manage_channels=True)
+async def preview_message(ctx: commands.Context, nom: str = ""):
+    """Preview special messages (admin only, log channel only)."""
+    if DISCORD_LOG_CHANNEL_ID and ctx.channel.id != DISCORD_LOG_CHANNEL_ID:
+        await ctx.send("\u26d4 Cette commande n'est disponible que dans le canal de logs.")
+        return
+
+    previews = {
+        "nuit": ("Message bonne nuit (Discord)", build_night_promo_discord()),
+        "nuit-tg": ("Message bonne nuit (Telegram HTML)", build_night_promo_telegram()),
+        "reboot": ("Message de mise \u00e0 jour", "\U0001f504 **Mise \u00e0 jour effectu\u00e9e.**"),
+    }
+
+    if not nom or nom not in previews:
+        noms = ", ".join(f"`{k}`" for k in previews)
+        await ctx.send(f"\U0001f4cb Messages disponibles : {noms}\nUsage : `bg!preview <nom>`")
+        return
+
+    label, content = previews[nom]
+    await ctx.send(f"\U0001f50d **Preview : {label}**\n\u2500\u2500\u2500\n{content}")
 
 
 async def _shutdown():

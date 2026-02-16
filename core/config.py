@@ -15,6 +15,7 @@ TELEGRAM_TOKEN: str = os.environ.get("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID: str = os.environ.get("TELEGRAM_CHAT_ID", "")
 DISCORD_OFFICIAL_CHANNEL_ID: int = int(os.getenv("DISCORD_NEWS_CHANNEL_ID", "1330916602425770088"))
 DISCORD_LOG_CHANNEL_ID: int = int(os.getenv("DISCORD_LOG_CHANNEL_ID", "0"))
+DISCORD_TWITTER_CHANNEL_ID: int = int(os.getenv("DISCORD_TWITTER_CHANNEL_ID", "0"))
 
 # Twitter / X
 TWITTER_API_KEY: str = os.environ.get("TWITTER_API_KEY", "")
