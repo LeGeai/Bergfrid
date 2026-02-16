@@ -196,6 +196,18 @@ async def send_discord_text_to_targets(text: str) -> None:
         await asyncio.sleep(DISCORD_SEND_DELAY_SECONDS)
 
 
+async def send_discord_embed_to_targets(embed: discord.Embed) -> None:
+    for cid in get_all_discord_target_channel_ids():
+        ch = await resolve_discord_channel(cid)
+        if not ch:
+            continue
+        try:
+            await ch.send(embed=embed)
+        except Exception as e:
+            log.warning("Erreur envoi embed Discord canal %d: %s", cid, e)
+        await asyncio.sleep(DISCORD_SEND_DELAY_SECONDS)
+
+
 async def send_telegram_text(text: str, parse_mode: str = "HTML", disable_preview: bool = True) -> bool:
     if aiohttp is None:
         log.error("aiohttp non installe: impossible d'envoyer sur Telegram.")
@@ -298,26 +310,28 @@ def _utc_ts() -> int:
 # MESSAGES SPECIAUX
 # =========================
 
-def build_night_promo_discord() -> str:
-    return (
-        "\U0001f319 **22h \u2014 Fin de nos publications pour la journ\u00e9e.**\n"
+def build_night_promo_discord() -> discord.Embed:
+    desc = (
         "Sauf urgence, nous reprenons demain \u00e0 9h15.\n"
-        "\n"
-        "\u2500\u2500\u2500\n"
         "\n"
         "Vous \u00eates ceux qui font ce m\u00e9dia. Vous \u00eates le c\u0153ur de notre travail.\n"
         "Pour nous soutenir : abonnez-vous, aimez, partagez et commentez "
         "sur tous nos r\u00e9seaux sociaux \u2014 mais surtout sur notre site web.\n"
         "\n"
-        f"\U0001f310 <{PROMO_WEBSITE_URL}>\n"
-        f"\u2615 <{TIPEEE_URL}>\n"
-        "\n"
-        "\u2500\u2500\u2500\n"
+        f"\U0001f310 [Visiter le site]({PROMO_WEBSITE_URL})\n"
+        f"\u2615 [Nous soutenir sur Tipeee]({TIPEEE_URL})\n"
         "\n"
         "Nous vous souhaitons une agr\u00e9able nuit. "
         "Que Dieu vous garde et vous guide. \U0001f64f\n"
-        f"\U0001f54e Pri\u00e8re du soir \u2192 <{PRIERES_URL}>"
+        f"\U0001f54e [Pri\u00e8re du soir]({PRIERES_URL})"
     )
+    embed = discord.Embed(
+        title="\U0001f319 22h \u2014 Fin de nos publications pour la journ\u00e9e.",
+        description=desc,
+        color=DISCORD_EMBED_COLOR,
+    )
+    embed.set_footer(text="bergfrid.com \u2014 M\u00e9dia ind\u00e9pendant")
+    return embed
 
 
 def build_night_promo_telegram() -> str:
@@ -342,13 +356,12 @@ def _is_sunday() -> bool:
     return datetime.now(TZ).weekday() == 6
 
 
-def build_morning_discord() -> str:
+def build_morning_discord() -> discord.Embed:
     sunday = (
         "\n\U0001f54d Nous vous souhaitons un joyeux dimanche et une bonne messe !\n"
         if _is_sunday() else ""
     )
-    return (
-        "\u2600\ufe0f **Bonjour \u00e0 tous !**\n"
+    desc = (
         "Il est 9h, nous allons reprendre notre activit\u00e9 normale.\n"
         f"{sunday}"
         "\n"
@@ -356,8 +369,15 @@ def build_morning_discord() -> str:
         "Vous \u00eates ceux qui font vivre notre m\u00e9dia.\n"
         "\n"
         "Que Dieu veille sur votre journ\u00e9e. \U0001f64f\n"
-        f"\U0001f54e Pri\u00e8re du jour \u2192 <{PRIERES_URL}>"
+        f"\U0001f54e [Pri\u00e8re du jour]({PRIERES_URL})"
     )
+    embed = discord.Embed(
+        title="\u2600\ufe0f Bonjour \u00e0 tous !",
+        description=desc,
+        color=DISCORD_EMBED_COLOR,
+    )
+    embed.set_footer(text="bergfrid.com \u2014 M\u00e9dia ind\u00e9pendant")
+    return embed
 
 
 def build_morning_telegram() -> str:
@@ -378,10 +398,8 @@ def build_morning_telegram() -> str:
     )
 
 
-def build_angelus() -> str:
-    return (
-        "\U0001f54e **Ang\u00e9lus**\n"
-        "\n"
+def build_angelus() -> discord.Embed:
+    desc = (
         "\u2123. L\u2019ange du Seigneur apporta l\u2019annonce \u00e0 Marie,\n"
         "\u211f. Et elle con\u00e7ut du Saint-Esprit.\n"
         "\n"
@@ -421,8 +439,15 @@ def build_angelus() -> str:
         "jusqu\u2019\u00e0 la gloire de la r\u00e9surrection. "
         "Par J\u00e9sus, le Christ, notre Seigneur. Amen.*\n"
         "\n"
-        f"\U0001f54e Pri\u00e8res \u2192 <{PRIERES_URL}>"
+        f"\U0001f54e [Pri\u00e8res]({PRIERES_URL})"
     )
+    embed = discord.Embed(
+        title="\U0001f54e Ang\u00e9lus",
+        description=desc,
+        color=DISCORD_EMBED_COLOR,
+    )
+    embed.set_footer(text="bergfrid.com/foi/prieres")
+    return embed
 
 
 # =========================
@@ -689,7 +714,7 @@ async def nightly_promo():
     log.info("Nightly promo: dispatch")
 
     if "discord" in enabled:
-        await send_discord_text_to_targets(build_night_promo_discord())
+        await send_discord_embed_to_targets(build_night_promo_discord())
 
     if "telegram" in enabled:
         await send_telegram_text(build_night_promo_telegram(), disable_preview=True)
@@ -717,7 +742,7 @@ async def morning_message():
     log.info("Morning message: dispatch")
 
     if "discord" in enabled:
-        await send_discord_text_to_targets(build_morning_discord())
+        await send_discord_embed_to_targets(build_morning_discord())
 
     if "telegram" in enabled:
         await send_telegram_text(build_morning_telegram(), disable_preview=True)
@@ -752,7 +777,7 @@ async def angelus_task():
     log.info("Angelus: envoi (%s)", hour_label)
 
     try:
-        await ch.send(build_angelus())
+        await ch.send(embed=build_angelus())
     except Exception as e:
         log.warning("Erreur envoi Angelus: %s", e)
 
@@ -946,22 +971,34 @@ async def preview_message(ctx: commands.Context, nom: str = ""):
             await ctx.send(embed=embed)
         return
 
-    previews = {
+    # Embeds (Discord)
+    embed_previews = {
         "nuit": ("Bonne nuit (Discord)", build_night_promo_discord()),
-        "nuit-tg": ("Bonne nuit (Telegram)", build_night_promo_telegram()),
         "matin": ("Bonjour (Discord)", build_morning_discord()),
-        "matin-tg": ("Bonjour (Telegram)", build_morning_telegram()),
         "angelus": ("Ang\u00e9lus", build_angelus()),
+    }
+
+    # Texte brut (Telegram, reboot)
+    text_previews = {
+        "nuit-tg": ("Bonne nuit (Telegram)", build_night_promo_telegram()),
+        "matin-tg": ("Bonjour (Telegram)", build_morning_telegram()),
         "reboot": ("Mise \u00e0 jour", "\U0001f504 **Mise \u00e0 jour effectu\u00e9e.**"),
     }
 
-    if not nom or nom not in previews:
-        all_noms = ", ".join(f"`{k}`" for k in list(previews.keys()) + ["x", "article"])
+    all_keys = list(embed_previews.keys()) + list(text_previews.keys()) + ["x", "article"]
+
+    if not nom or (nom not in embed_previews and nom not in text_previews):
+        all_noms = ", ".join(f"`{k}`" for k in all_keys)
         await ctx.send(f"\U0001f4cb Messages disponibles : {all_noms}\nUsage : `bg!preview <nom>`")
         return
 
-    label, content = previews[nom]
-    await ctx.send(f"\U0001f50d **Preview : {label}**\n\u2500\u2500\u2500\n{content}")
+    if nom in embed_previews:
+        label, embed = embed_previews[nom]
+        await ctx.send(f"\U0001f50d **Preview : {label}**\n\u2500\u2500\u2500")
+        await ctx.send(embed=embed)
+    else:
+        label, content = text_previews[nom]
+        await ctx.send(f"\U0001f50d **Preview : {label}**\n\u2500\u2500\u2500\n{content}")
 
 
 async def _shutdown():
