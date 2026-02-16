@@ -7,14 +7,16 @@ from discord.ext import commands, tasks
 
 from core.config import (
     DISCORD_TOKEN, TELEGRAM_TOKEN, TELEGRAM_CHAT_ID,
-    DISCORD_OFFICIAL_CHANNEL_ID, DISCORD_LOG_CHANNEL_ID, DISCORD_TWITTER_CHANNEL_ID, DISCORD_EMBED_COLOR,
+    DISCORD_OFFICIAL_CHANNEL_ID, DISCORD_LOG_CHANNEL_ID,
+    DISCORD_TWITTER_CHANNEL_ID, DISCORD_SAINTS_CHANNEL_ID, DISCORD_EMBED_COLOR,
     DISCORD_SUMMARY_MAX, TELEGRAM_SUMMARY_MAX, TWITTER_TWEET_MAX,
     MASTODON_POST_MAX, BLUESKY_POST_MAX,
     DISCORD_SEND_DELAY_SECONDS,
     STATE_FILE, BERGFRID_RSS_URL, BASE_DOMAIN,
     RSS_POLL_MINUTES, RSS_FETCH_TIMEOUT, MAX_BACKLOG_POSTS_PER_TICK,
     ARTICLE_PUBLISH_DELAY_SECONDS, SENT_RING_MAX,
-    TZ, PROMO_HOUR, PROMO_MINUTE, TIPEEE_URL, PROMO_WEBSITE_URL,
+    TZ, PROMO_HOUR, PROMO_MINUTE, MORNING_HOUR, MORNING_MINUTE,
+    TIPEEE_URL, PROMO_WEBSITE_URL, PRIERES_URL,
     FAILURE_ALERT_THRESHOLD,
     PUBLISH_MAX_RETRIES, PUBLISH_RETRY_BASE_DELAY,
     REBOOT_NOTICE_COOLDOWN_SECONDS,
@@ -298,21 +300,128 @@ def _utc_ts() -> int:
 
 def build_night_promo_discord() -> str:
     return (
-        "\U0001f319 **Belle nuit \u00e0 chacun d'entre vous.**\n"
-        "Que Dieu vous garde. \U0001f64f\n\n"
-        "Vous \u00eates ceux qui font notre m\u00e9dia, vous \u00eates notre c\u0153ur.\n"
-        f"\U0001f58b\ufe0f Pensez \u00e0 nous rendre visite sur le site : {PROMO_WEBSITE_URL}\n"
-        f"\u2615 Et si vous avez le c\u0153ur et l'opportunit\u00e9, vous pouvez nous soutenir ici : {TIPEEE_URL}"
+        "\U0001f319 **22h \u2014 Fin de nos publications pour la journ\u00e9e.**\n"
+        "Sauf urgence, nous reprenons demain \u00e0 9h15.\n"
+        "\n"
+        "\u2500\u2500\u2500\n"
+        "\n"
+        "Vous \u00eates ceux qui font ce m\u00e9dia. Vous \u00eates le c\u0153ur de notre travail.\n"
+        "Pour nous soutenir : abonnez-vous, aimez, partagez et commentez "
+        "sur tous nos r\u00e9seaux sociaux \u2014 mais surtout sur notre site web.\n"
+        "\n"
+        f"\U0001f310 {PROMO_WEBSITE_URL}\n"
+        f"\u2615 {TIPEEE_URL}\n"
+        "\n"
+        "\u2500\u2500\u2500\n"
+        "\n"
+        "Nous vous souhaitons une agr\u00e9able nuit. "
+        "Que Dieu vous garde et vous guide. \U0001f64f\n"
+        f"\U0001f54e Pri\u00e8re du soir \u2192 {PRIERES_URL}"
     )
 
 
 def build_night_promo_telegram() -> str:
     return (
-        "\U0001f319 <b>Belle nuit \u00e0 chacun d'entre vous.</b>\n"
-        "Que Dieu vous garde. \U0001f64f\n\n"
-        "Vous \u00eates ceux qui font notre m\u00e9dia, vous \u00eates notre c\u0153ur.\n"
-        f"\U0001f58b\ufe0f <a href='{PROMO_WEBSITE_URL}'>Visiter le site</a>\n"
-        f"\u2615 <a href='{TIPEEE_URL}'>Faire un don et financer le m\u00e9dia (Tipeee)</a>"
+        "\U0001f319 <b>22h \u2014 Fin de nos publications pour la journ\u00e9e.</b>\n"
+        "Sauf urgence, nous reprenons demain \u00e0 9h15.\n"
+        "\n"
+        "Vous \u00eates ceux qui font ce m\u00e9dia. Vous \u00eates le c\u0153ur de notre travail.\n"
+        "Pour nous soutenir : abonnez-vous, aimez, partagez et commentez "
+        "sur tous nos r\u00e9seaux sociaux \u2014 mais surtout sur notre site web.\n"
+        "\n"
+        f"\U0001f310 <a href='{PROMO_WEBSITE_URL}'>Visiter le site</a>\n"
+        f"\u2615 <a href='{TIPEEE_URL}'>Nous soutenir sur Tipeee</a>\n"
+        "\n"
+        "Nous vous souhaitons une agr\u00e9able nuit. "
+        "Que Dieu vous garde et vous guide. \U0001f64f\n"
+        f"\U0001f54e <a href='{PRIERES_URL}'>Pri\u00e8re du soir</a>"
+    )
+
+
+def _is_sunday() -> bool:
+    return datetime.now(TZ).weekday() == 6
+
+
+def build_morning_discord() -> str:
+    sunday = (
+        "\n\U0001f54d Nous vous souhaitons un joyeux dimanche et une bonne messe !\n"
+        if _is_sunday() else ""
+    )
+    return (
+        "\u2600\ufe0f **Bonjour \u00e0 tous !**\n"
+        "Il est 9h, nous allons reprendre notre activit\u00e9 normale.\n"
+        f"{sunday}"
+        "\n"
+        "Pensez \u00e0 nous suivre et nous soutenir ! "
+        "Vous \u00eates ceux qui font vivre notre m\u00e9dia.\n"
+        "\n"
+        "Que Dieu veille sur votre journ\u00e9e. \U0001f64f\n"
+        f"\U0001f54e Pri\u00e8re du jour \u2192 {PRIERES_URL}"
+    )
+
+
+def build_morning_telegram() -> str:
+    sunday = (
+        "\n\U0001f54d Nous vous souhaitons un joyeux dimanche et une bonne messe !\n"
+        if _is_sunday() else ""
+    )
+    return (
+        "\u2600\ufe0f <b>Bonjour \u00e0 tous !</b>\n"
+        "Il est 9h, nous allons reprendre notre activit\u00e9 normale.\n"
+        f"{sunday}"
+        "\n"
+        "Pensez \u00e0 nous suivre et nous soutenir ! "
+        "Vous \u00eates ceux qui font vivre notre m\u00e9dia.\n"
+        "\n"
+        "Que Dieu veille sur votre journ\u00e9e. \U0001f64f\n"
+        f"\U0001f54e <a href='{PRIERES_URL}'>Pri\u00e8re du jour</a>"
+    )
+
+
+def build_angelus() -> str:
+    return (
+        "\U0001f54e **Ang\u00e9lus**\n"
+        "\n"
+        "\u2123. L\u2019ange du Seigneur apporta l\u2019annonce \u00e0 Marie,\n"
+        "\u211f. Et elle con\u00e7ut du Saint-Esprit.\n"
+        "\n"
+        "*Je vous salue, Marie, pleine de gr\u00e2ces ; "
+        "le Seigneur est avec vous ; vous \u00eates b\u00e9nie entre toutes les femmes, "
+        "et J\u00e9sus le fruit de vos entrailles est b\u00e9ni. "
+        "Sainte Marie, M\u00e8re de Dieu, priez pour nous, pauvres p\u00e9cheurs, "
+        "maintenant et \u00e0 l\u2019heure de notre mort. Amen.*\n"
+        "\n"
+        "\u2123. Voici la Servante du Seigneur,\n"
+        "\u211f. Qu\u2019il me soit fait selon votre parole.\n"
+        "\n"
+        "*Je vous salue, Marie, pleine de gr\u00e2ces ; "
+        "le Seigneur est avec vous ; vous \u00eates b\u00e9nie entre toutes les femmes, "
+        "et J\u00e9sus le fruit de vos entrailles est b\u00e9ni. "
+        "Sainte Marie, M\u00e8re de Dieu, priez pour nous, pauvres p\u00e9cheurs, "
+        "maintenant et \u00e0 l\u2019heure de notre mort. Amen.*\n"
+        "\n"
+        "\u2123. Et le Verbe s\u2019est fait chair,\n"
+        "\u211f. Et il a habit\u00e9 parmi nous.\n"
+        "\n"
+        "*Je vous salue, Marie, pleine de gr\u00e2ces ; "
+        "le Seigneur est avec vous ; vous \u00eates b\u00e9nie entre toutes les femmes, "
+        "et J\u00e9sus le fruit de vos entrailles est b\u00e9ni. "
+        "Sainte Marie, M\u00e8re de Dieu, priez pour nous, pauvres p\u00e9cheurs, "
+        "maintenant et \u00e0 l\u2019heure de notre mort. Amen.*\n"
+        "\n"
+        "\u2500\u2500\u2500\n"
+        "\n"
+        "**Oraison**\n"
+        "\u2123. Priez pour nous, sainte M\u00e8re de Dieu,\n"
+        "\u211f. Afin que nous soyons rendus dignes des promesses du Christ.\n"
+        "\n"
+        "*Prions. Que votre gr\u00e2ce, Seigneur notre P\u00e8re, se r\u00e9pande en nos c\u0153urs : "
+        "par le message de l\u2019Ange vous nous avez fait conna\u00eetre l\u2019Incarnation "
+        "de votre Fils bien-aim\u00e9, conduisez-nous par sa passion et par sa croix "
+        "jusqu\u2019\u00e0 la gloire de la r\u00e9surrection. "
+        "Par J\u00e9sus, le Christ, notre Seigneur. Amen.*\n"
+        "\n"
+        f"\U0001f54e {PRIERES_URL}"
     )
 
 
@@ -590,6 +699,65 @@ async def nightly_promo():
 
 
 # =========================
+# BONJOUR 09:00 (matin)
+# =========================
+
+@tasks.loop(time=dtime(hour=MORNING_HOUR, minute=MORNING_MINUTE, tzinfo=TZ))
+async def morning_message():
+    state = state_store.load()
+    today = _today_str()
+
+    if state.get("morning_sent_date") == today:
+        log.info("Morning message: skip (already sent today).")
+        return
+
+    targets = load_targets()
+    enabled = set(targets.get("enabled", ["discord", "telegram"]))
+
+    log.info("Morning message: dispatch")
+
+    if "discord" in enabled:
+        await send_discord_text_to_targets(build_morning_discord())
+
+    if "telegram" in enabled:
+        await send_telegram_text(build_morning_telegram(), disable_preview=True)
+
+    state["morning_sent_date"] = today
+    state_store.save(state)
+
+
+# =========================
+# ANGELUS (7h, 12h, 19h)
+# =========================
+
+_angelus_times = [
+    dtime(hour=7, minute=0, tzinfo=TZ),
+    dtime(hour=12, minute=0, tzinfo=TZ),
+    dtime(hour=19, minute=0, tzinfo=TZ),
+]
+
+
+@tasks.loop(time=_angelus_times)
+async def angelus_task():
+    if not DISCORD_SAINTS_CHANNEL_ID:
+        return
+
+    ch = await resolve_discord_channel(DISCORD_SAINTS_CHANNEL_ID)
+    if not ch:
+        log.warning("Angelus: canal saints introuvable (%d).", DISCORD_SAINTS_CHANNEL_ID)
+        return
+
+    now = datetime.now(TZ)
+    hour_label = f"{now.hour}h"
+    log.info("Angelus: envoi (%s)", hour_label)
+
+    try:
+        await ch.send(build_angelus())
+    except Exception as e:
+        log.warning("Erreur envoi Angelus: %s", e)
+
+
+# =========================
 # EVENTS / COMMANDS
 # =========================
 
@@ -607,6 +775,14 @@ async def on_ready():
     if not nightly_promo.is_running():
         nightly_promo.start()
         log.info("Tache promo demarree: chaque jour a %02d:%02d (%s)", PROMO_HOUR, PROMO_MINUTE, TZ.key)
+
+    if not morning_message.is_running():
+        morning_message.start()
+        log.info("Tache matin demarree: chaque jour a %02d:%02d (%s)", MORNING_HOUR, MORNING_MINUTE, TZ.key)
+
+    if not angelus_task.is_running():
+        angelus_task.start()
+        log.info("Tache Angelus demarree: 7h, 12h, 19h (%s)", TZ.key)
 
 
 @bot.command(name="setnews")
@@ -771,13 +947,16 @@ async def preview_message(ctx: commands.Context, nom: str = ""):
         return
 
     previews = {
-        "nuit": ("Message bonne nuit (Discord)", build_night_promo_discord()),
-        "nuit-tg": ("Message bonne nuit (Telegram HTML)", build_night_promo_telegram()),
-        "reboot": ("Message de mise \u00e0 jour", "\U0001f504 **Mise \u00e0 jour effectu\u00e9e.**"),
+        "nuit": ("Bonne nuit (Discord)", build_night_promo_discord()),
+        "nuit-tg": ("Bonne nuit (Telegram)", build_night_promo_telegram()),
+        "matin": ("Bonjour (Discord)", build_morning_discord()),
+        "matin-tg": ("Bonjour (Telegram)", build_morning_telegram()),
+        "angelus": ("Ang\u00e9lus", build_angelus()),
+        "reboot": ("Mise \u00e0 jour", "\U0001f504 **Mise \u00e0 jour effectu\u00e9e.**"),
     }
 
     if not nom or nom not in previews:
-        all_noms = "`nuit`, `nuit-tg`, `reboot`, `x`, `article`"
+        all_noms = ", ".join(f"`{k}`" for k in list(previews.keys()) + ["x", "article"])
         await ctx.send(f"\U0001f4cb Messages disponibles : {all_noms}\nUsage : `bg!preview <nom>`")
         return
 

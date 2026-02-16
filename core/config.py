@@ -16,6 +16,7 @@ TELEGRAM_CHAT_ID: str = os.environ.get("TELEGRAM_CHAT_ID", "")
 DISCORD_OFFICIAL_CHANNEL_ID: int = int(os.getenv("DISCORD_NEWS_CHANNEL_ID", "1330916602425770088"))
 DISCORD_LOG_CHANNEL_ID: int = int(os.getenv("DISCORD_LOG_CHANNEL_ID", "0"))
 DISCORD_TWITTER_CHANNEL_ID: int = int(os.getenv("DISCORD_TWITTER_CHANNEL_ID", "0"))
+DISCORD_SAINTS_CHANNEL_ID: int = int(os.getenv("DISCORD_SAINTS_CHANNEL_ID", "0"))
 
 # Twitter / X
 TWITTER_API_KEY: str = os.environ.get("TWITTER_API_KEY", "")
@@ -76,8 +77,11 @@ FAILURE_ALERT_THRESHOLD: int = int(os.getenv("FAILURE_ALERT_THRESHOLD", "5"))
 TZ: ZoneInfo = ZoneInfo(os.getenv("BOT_TIMEZONE", "Europe/Paris"))
 PROMO_HOUR: int = int(os.getenv("PROMO_HOUR", "22"))
 PROMO_MINUTE: int = int(os.getenv("PROMO_MINUTE", "0"))
+MORNING_HOUR: int = int(os.getenv("MORNING_HOUR", "9"))
+MORNING_MINUTE: int = int(os.getenv("MORNING_MINUTE", "0"))
 TIPEEE_URL: str = os.getenv("TIPEEE_URL", "https://fr.tipeee.com/parlement-des-hiboux")
 PROMO_WEBSITE_URL: str = os.getenv("PROMO_WEBSITE_URL", "https://www.bergfrid.com")
+PRIERES_URL: str = "https://bergfrid.com/foi/prieres"
 
 # =========================
 # Reboot notice
