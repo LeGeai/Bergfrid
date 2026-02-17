@@ -14,7 +14,9 @@
       "WebFetch(domain:communalytic.org)",
       "WebFetch(domain:bika.ai)",
       "WebFetch(domain:bergfrid.com)",
-      "Bash(cd:*)"
+      "Bash(cd:*)",
+      "Bash(pip show:*)",
+      "Bash(pip3 show:*)"
     ]
   }
 }

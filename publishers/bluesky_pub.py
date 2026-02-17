@@ -122,11 +122,48 @@ class BlueskyPublisher:
                 return None
             except Exception as e:
                 err_str = str(e).lower()
+                # atproto SDK: status_code sur e.response.status_code
+                _resp = getattr(e, "response", None)
+                status_code = getattr(_resp, "status_code", None)
+                # Message d'erreur XRPC (ex: "Record/text must not be longer than 300 graphemes")
+                _content = getattr(_resp, "content", None)
+                xrpc_msg = getattr(_content, "message", None) or ""
+
+                log.warning(
+                    "Bluesky erreur (tentative %d/%d, status=%s): %s",
+                    attempt, self.max_retries, status_code,
+                    xrpc_msg or e,
+                )
+
+                # 400 Bad Request = contenu invalide, ne pas retry
+                if status_code == 400 or (
+                    "status_code=400" in err_str
+                ):
+                    log.error(
+                        "Bluesky 400 Bad Request: %s (texte=%d chars, embed=%s)",
+                        xrpc_msg or e, len(text),
+                        type(embed).__name__ if embed else None,
+                    )
+                    return None
+
+                # Rate limit (429) -> retry avec backoff
+                if status_code == 429 or "ratelimit" in err_str.replace(" ", ""):
+                    delay = self.retry_base_delay * (2 ** (attempt - 1))
+                    log.warning(
+                        "Bluesky rate limit. Retry dans %.1fs (tentative %d/%d).",
+                        delay, attempt, self.max_retries,
+                    )
+                    if attempt < self.max_retries:
+                        import time
+                        time.sleep(delay)
+                    continue
 
                 # Auth / session expired -> re-login once
                 if not _relogged and (
-                    "auth" in err_str or "expired" in err_str
-                    or "invalid" in err_str or "401" in err_str
+                    status_code == 401
+                    or "expired" in err_str
+                    or "unauthorized" in err_str
+                    or ("auth" in err_str and "token" in err_str)
                 ):
                     log.warning("Bluesky: session expiree, re-login...")
                     if self._re_login():
@@ -137,29 +174,21 @@ class BlueskyPublisher:
                         log.error("Bluesky: echec re-login.")
                         return False
 
-                if "rate" in err_str or "limit" in err_str or "429" in err_str:
+                # Erreur serveur (5xx) -> retry avec backoff
+                if status_code and 500 <= status_code < 600:
                     delay = self.retry_base_delay * (2 ** (attempt - 1))
                     log.warning(
-                        "Bluesky rate limit. Retry dans %.1fs (tentative %d/%d).",
-                        delay, attempt, self.max_retries,
+                        "Bluesky erreur serveur %d. Retry dans %.1fs (tentative %d/%d).",
+                        status_code, delay, attempt, self.max_retries,
                     )
                     if attempt < self.max_retries:
                         import time
                         time.sleep(delay)
                     continue
-                elif "500" in err_str or "502" in err_str or "503" in err_str:
-                    delay = self.retry_base_delay * (2 ** (attempt - 1))
-                    log.warning(
-                        "Bluesky erreur serveur. Retry dans %.1fs (tentative %d/%d).",
-                        delay, attempt, self.max_retries,
-                    )
-                    if attempt < self.max_retries:
-                        import time
-                        time.sleep(delay)
-                    continue
-                else:
-                    log.error("Bluesky erreur API (tentative %d/%d): %s", attempt, self.max_retries, e)
-                    return None
+
+                # Autre erreur inconnue -> ne pas retry
+                log.error("Bluesky erreur inattendue: %s", e)
+                return None
 
         log.error("Bluesky: echec apres %d tentatives.", self.max_retries)
         return None
