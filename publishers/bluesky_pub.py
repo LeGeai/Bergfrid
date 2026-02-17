@@ -1,4 +1,5 @@
 import asyncio
+import io
 import logging
 import urllib.request
 from typing import Dict, Any
@@ -59,6 +60,40 @@ class BlueskyPublisher:
 
         return text
 
+    _BLOB_MAX = 1_000_000  # Bluesky max blob size (bytes)
+
+    @staticmethod
+    def _compress_image(data: bytes, max_bytes: int) -> bytes:
+        """Compress image to fit within max_bytes using Pillow."""
+        try:
+            from PIL import Image
+        except ImportError:
+            log.warning("Pillow non installe, impossible de compresser l'image.")
+            return data
+
+        img = Image.open(io.BytesIO(data))
+        img = img.convert("RGB")
+
+        # Reduire la resolution si tres grande
+        max_dim = 1600
+        if max(img.size) > max_dim:
+            img.thumbnail((max_dim, max_dim), Image.LANCZOS)
+
+        # Compression JPEG avec qualite decroissante
+        for quality in (85, 70, 55, 40):
+            buf = io.BytesIO()
+            img.save(buf, format="JPEG", quality=quality, optimize=True)
+            result = buf.getvalue()
+            if len(result) <= max_bytes:
+                log.info(
+                    "Image compressee: %d KB -> %d KB (q=%d)",
+                    len(data) // 1024, len(result) // 1024, quality,
+                )
+                return result
+
+        log.warning("Image toujours trop grosse apres compression (%d KB).", len(result) // 1024)
+        return result
+
     def _upload_thumb(self, image_url: str):
         """Download image and upload as blob for embed thumbnail."""
         client = self._ensure_client()
@@ -70,6 +105,12 @@ class BlueskyPublisher:
             )
             with urllib.request.urlopen(req, timeout=15) as resp:
                 data = resp.read()
+            if len(data) > self._BLOB_MAX:
+                log.info(
+                    "Image trop grosse (%d KB > %d KB), compression...",
+                    len(data) // 1024, self._BLOB_MAX // 1024,
+                )
+                data = self._compress_image(data, self._BLOB_MAX)
             blob_resp = client.upload_blob(data)
             return blob_resp.blob
         except Exception as e:

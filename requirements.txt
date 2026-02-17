@@ -5,6 +5,7 @@ beautifulsoup4>=4.12,<5.0
 tweepy>=4.14,<5.0
 Mastodon.py>=1.8,<2.0
 atproto>=0.0.55
+Pillow>=10.0
 tzdata>=2024.1
 pytest>=7.0
 pytest-asyncio>=0.21
