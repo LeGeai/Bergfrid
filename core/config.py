@@ -63,7 +63,7 @@ SENT_RING_MAX: int = int(os.getenv("SENT_RING_MAX", "250"))
 # =========================
 # Retry / backoff
 # =========================
-PUBLISH_MAX_RETRIES: int = int(os.getenv("PUBLISH_MAX_RETRIES", "3"))
+PUBLISH_MAX_RETRIES: int = int(os.getenv("PUBLISH_MAX_RETRIES", "5"))
 PUBLISH_RETRY_BASE_DELAY: float = float(os.getenv("PUBLISH_RETRY_BASE_DELAY", "5"))
 
 # =========================

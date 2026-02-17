@@ -627,6 +627,8 @@ async def bergfrid_watcher():
         # Plateformes optionnelles (twitter, mastodon, bluesky)
         for platform, pub in _optional_publishers.items():
             if platform in enabled and not StateStore.sent_has(state, platform, eid):
+                if health.is_in_cooldown(platform):
+                    continue
                 log.info("Publication %s: %s", platform, article.title)
                 plat_ok = await pub.publish(article, targets.get(platform, {}))
                 pub_results[platform] = plat_ok
@@ -693,6 +695,9 @@ async def _catchup_missing_platforms(entries, state, enabled, targets):
                 for other in publishers if other != platform
             )
             if not sent_elsewhere:
+                continue
+
+            if health.is_in_cooldown(platform):
                 continue
 
             log.info("Rattrapage %s: %s", platform, article.title)
