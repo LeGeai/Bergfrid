@@ -1,6 +1,6 @@
 import asyncio
 import logging
-from datetime import datetime, time as dtime, timezone
+from datetime import datetime, time as dtime, timedelta, timezone
 
 import discord
 from discord.ext import commands, tasks
@@ -322,6 +322,10 @@ async def send_twitter_draft(article) -> None:
 
 def _today_str() -> str:
     return datetime.now(TZ).date().isoformat()
+
+
+def _yesterday_str() -> str:
+    return (datetime.now(TZ).date() - timedelta(days=1)).isoformat()
 
 
 def _utc_ts() -> int:
@@ -761,6 +765,10 @@ async def morning_message():
 
     if state.get("morning_sent_date") == today:
         log.info("Morning message: skip (already sent today).")
+        return
+
+    if state.get("last_article_published_date") != _yesterday_str():
+        log.info("Morning message: skip (no article published yesterday).")
         return
 
     targets = load_targets()
