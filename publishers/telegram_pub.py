@@ -189,6 +189,21 @@ class TelegramPublisher:
                 }
 
             msg_id = await self._send_with_retry(endpoint, payload)
+
+            # Fallback: si sendPhoto echoue (image inaccessible), retenter sans photo
+            if msg_id is None and use_photo:
+                log.warning("Telegram: sendPhoto echoue, fallback sendMessage sans image.")
+                text = self._build_caption(article, url, use_photo=False)
+                endpoint = f"https://api.telegram.org/bot{self.token}/sendMessage"
+                payload = {
+                    "chat_id": self.chat_id,
+                    "text": text,
+                    "parse_mode": "HTML",
+                    "disable_web_page_preview": False,
+                    "reply_markup": reply_markup,
+                }
+                msg_id = await self._send_with_retry(endpoint, payload)
+
             if msg_id is not None:
                 log.info("Telegram: publie '%s'.", article.title[:60])
                 await self.set_reaction(msg_id, "\U0001f44d")
